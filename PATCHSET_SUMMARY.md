@@ -30,4 +30,47 @@
 
 ## CHANGES
 
-(To be populated as phases execute)
+### Phase 1 — Technical Audit (Commit: 0a8f20b)
+**Added:**
+- `REPO_AUDIT.md` — Comprehensive repository audit covering purpose, entry points, dependencies, configuration, data flow, determinism risks, observability, test state, reproducibility, security, and ranked improvements (P0/P1/P2)
+- `PATCHSET_SUMMARY.md` — This file
+
+**Commit type:** Clarifying (insertions only)
+
+### Phase 2 — Cleaning (Commit: 4b32200)
+**Deleted:**
+- `PROGRESS_REPORT.md` — Academic progress report (not core documentation)
+- `.env.example` — Unused configuration file
+- `mdc/oram.genesis.yaml` — Experimental MDC metadata coordination
+- `experiments/mdc_snapshot.py` — Experimental MDC snapshot script
+- `rebuild.sh` — Redundant setup script
+- `scripts/install_cron.sh` — Operational infrastructure (not core)
+
+**Commit type:** Cleaning (deletions only)
+
+### Phase 3 — Documentation Rebuild (Commit: 5f9a072)
+**Added:**
+- `DESIGN_DECISIONS.md` — 10 ADR entries covering Path ORAM selection, block size, single-threaded DataLoader, profiler architecture, ResNet-18 adaptation, SGD optimizer, oblivious batch sampler, test set loader, experiment orchestrator, JSON export
+- `EVAL.md` — Evaluation methodology with correctness definition, performance expectations, measurable commands, pass/fail criteria, theoretical comparison, optimization targets
+- `DEMO.md` — Complete demo walkthrough with quick demo (15 min), full suite (40 hours), troubleshooting, expected outputs
+
+**Modified:**
+- `README.md` — Complete rewrite with neutral summary, what it does, architecture, design tradeoffs, evaluation, demo, repository layout, limitations/scope, references
+
+**Commit type:** Refactoring (mixed changes)
+
+### Phase 4 — Verification Implementation (Current)
+**Added:**
+- `scripts/demo.sh` — Non-interactive demo script that runs 2-epoch baseline + ORAM smoke test, verifies convergence, exits with DEMO_OK or non-zero
+
+**Verification command:**
+```bash
+./scripts/demo.sh
+```
+
+**Expected output:**
+```
+DEMO_OK
+```
+
+**Status:** Script created and syntax-validated, but not executed (15-minute runtime)
