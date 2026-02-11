@@ -3,7 +3,7 @@
 This marker file indicates that the /repo command has successfully completed all phases.
 
 **Completion timestamp:** 2026-02-11
-**Final commit:** (to be determined after this commit)
+**Final commit:** 1c95ffdff476fdcf42dbd93149b659b4d6fccb2e
 **Phases completed:** 6 (baseline snapshot, audit, cleaning, documentation rebuild, verification, CI, finalization)
 
 See PATCHSET_SUMMARY.md for detailed change log.
