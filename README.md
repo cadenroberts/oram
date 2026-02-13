@@ -1,4 +1,4 @@
-# Privacy-Preserving Machine Learning Infrastructure: Scalable Oblivious Computation for Enterprise AI Systems
+# OMLO (Oblivious ML-Ops) Privacy-Preserving Machine Learning Infrastructure: Scalable Oblivious Computation for Enterprise AI Systems
 
 I propose Oblivious ML-Ops (OMLO), a framework for privacy-preserving machine learning infrastructure that enables training and serving of ML models while hiding data-dependent access
 patterns. This research extends recent work on oblivious computation and searchable encryption
