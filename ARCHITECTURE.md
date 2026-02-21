@@ -5,20 +5,17 @@
 The experiment pipeline compares two training paths: a standard PyTorch DataLoader path and an ORAM-backed path. Both train the same ResNet-18 model on CIFAR-10. The ORAM path interposes a Path ORAM tree between the dataset and the training loop, adding encrypted block I/O and tree reshuffling to every sample access.
 
 ```
-                    ┌─────────────────────────────────────────────┐
-                    │           Experiment Orchestrator            │
-                    │  (scripts/run_experiments.sh)                │
-                    └──────┬──────┬──────┬──────┬──────┬──────────┘
-                           │      │      │      │      │
-                    Phase 1│   P2 │   P3 │   P4 │   P5 │
-                           ▼      ▼      ▼      ▼      ▼
-                    ┌──────┐┌─────┐┌─────┐┌─────┐┌──────────┐
-                    │Base- ││ORAM ││Batch││Data-││ Analysis │
-                    │line  ││Train││Sweep││Sweep││          │
-                    └──┬───┘└──┬──┘└──┬──┘└──┬──┘└────┬─────┘
-                       │       │      │      │        │
-                       ▼       ▼      ▼      ▼        ▼
-                    results/ directory (JSON profiles, plots, report)
+                   ┌───────────────────────────────────────────────────────────────────┐
+                   │       Experiment Orchestrator (scripts/run_experiments.sh)        │
+                   │┌──────────┐┌────────────┐┌─────────────┐┌────────────┐┌──────────┐│
+                   ││ Baseline ││ ORAM Train ││ Batch Sweep ││ Data Sweep ││ Analysis ││
+                   │└─────┬────┘└─────┬──────┘└──────┬──────┘└──────┬─────┘└────┬─────┘│
+                   └──────┼───────────┼──────────────┼──────────────┼───────────┼──────┘
+                        1 │         2 │            3 │            4 │         5 │
+                          ▼           ▼              ▼              ▼           ▼
+                          ┌─────────────────────────────────────────────────────┐
+                          │  results/ directory (JSON profiles, plots, report)  │
+                          └─────────────────────────────────────────────────────┘
 ```
 
 ## Data path: standard vs. ORAM
