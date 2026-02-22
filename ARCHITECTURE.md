@@ -5,17 +5,13 @@
 The experiment pipeline compares two training paths: a standard PyTorch DataLoader path and an ORAM-backed path. Both train the same ResNet-18 model on CIFAR-10. The ORAM path interposes a Path ORAM tree between the dataset and the training loop, adding encrypted block I/O and tree reshuffling to every sample access.
 
 ```
-                   ┌───────────────────────────────────────────────────────────────────┐
-                   │       Experiment Orchestrator (scripts/run_experiments.sh)        │
-                   │┌──────────┐┌────────────┐┌─────────────┐┌────────────┐┌──────────┐│
-                   ││ Baseline ││ ORAM Train ││ Batch Sweep ││ Data Sweep ││ Analysis ││
-                   │└─────┬────┘└─────┬──────┘└──────┬──────┘└──────┬─────┘└────┬─────┘│
-                   └──────┼───────────┼──────────────┼──────────────┼───────────┼──────┘
-                        1 │         2 │            3 │            4 │         5 │
-                          ▼           ▼              ▼              ▼           ▼
-                          ┌─────────────────────────────────────────────────────┐
-                          │  results/ directory (JSON profiles, plots, report)  │
-                          └─────────────────────────────────────────────────────┘
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃             Experiment Orchestrator (scripts/run_experiments.sh)               ┃
+┃┌──────────┐ ┌──────────────┐ ┌───────────────┐ ┌──────────────┐ ┌────────────┐ ┃ ┌─────────────────────────────────────────────────┐
+┃│ Baseline ├─┼─▶ ORAM train ├─┼─▶ Batch Sweep ├─┼─▶ Data Sweep ├─┼─▶ Analysis ├─╂─┼▶  results/ # JSON profiles, logs, plots, report │
+┃└──────────┘ └──────────────┘ └───────────────┘ └──────────────┘ └────────────┘ ┃ └─────────────────────────────────────────────────┘
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
 ```
 
 ## Data path: standard vs. ORAM
@@ -28,32 +24,22 @@ CIFAR-10 (disk) → torchvision.datasets → DataLoader (4 workers) → GPU
 
 ### ORAM path
 
-```
-CIFAR-10 (disk)
-    │
-    ▼ load_cifar10_to_oram()
-┌──────────────┐
-│  ORAMStorage │
-│  (Path ORAM) │
-│  ┌─────────┐ │
-│  │ AES-enc │ │    serialize        ORAM read        deserialize
-│  │ 4KB     │◀├── image+label ──▶ tree traverse ──▶ image+label
-│  │ blocks  │ │    (struct.pack)   O(log N) blocks   (struct.unpack)
-│  └─────────┘ │
-└──────────────┘
-    │
-    ▼ ORAMDataset.__getitem__()
-┌──────────────┐
-│ ORAMDataset  │  PyTorch Dataset backed by ORAMStorage.read()
-│ (num_workers │  Single-threaded: ORAM requires exclusive access
-│  = 0)        │
-└──────┬───────┘
-       │
+```   
+┌─────────────────┐  ┌────────────────────────┐  ┌──────────────────────────────────┐
+│ CIFAR-10 # disk ├─▶│ load_cifar10_to_oram() ├─▶│ ORAMStorage # AES-enc 4KB blocks │
+└─────────────────┘  └────────────────────────┘  └──────────────────────────────────┘
+┌───────────────┐  ┌─────────────────────────────┐  ┌─────────────┐ 
+│ struct.unpack |◀─┤ ORAM read # O(log N) blocks │◀─┤ struct.pack │
+└───────────────┘  └─────────────────────────────┘  └─────────────┘ 
+    ▼
+┌──────────────────────────────────────────────────────┐  ┌──────────────────────────────────────────────────────────────────────┐
+│ ORAMDataset.__getitem__(): Pytorch, num_workers = 0. │◀─┤ ORAMStorage.read(): Single-threaded, ORAM requires exclusive access. │
+└──────┬───────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────┘
        ▼ ObliviousBatchSampler
-┌──────────────┐
-│  DataLoader  │  Custom batch sampler with seeded shuffle
-└──────┬───────┘
-       │
+┌────────────────────────────────────────────────────────┐
+│  DataLoader: Custom batch sampler with seeded shuffle. │
+└─────────────────────────┬──────────────────────────────┘
+                          │
        ▼
     GPU (ResNet-18 forward/backward)
 ```
