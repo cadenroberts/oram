@@ -2,7 +2,7 @@
 
 ## System overview
 
-The experiment pipeline compares two training paths: a standard PyTorch DataLoader path and an ORAM-backed path. Both train the same ResNet-18 model on CIFAR-10. The ORAM path interposes a Path ORAM tree between the dataset and the training loop, adding encrypted block I/O and tree reshuffling to every sample access.
+The experiment pipeline is designed to isolate and quantify the performance overhead introduced by ORAM relative to a standard PyTorch data path. I compare two training paths: a standard PyTorch DataLoader path and an ORAM-backed path. Both train the same ResNet-18 model on CIFAR-10. The ORAM path interposes a Path ORAM tree between the dataset and the training loop, adding encrypted block I/O and tree reshuffling to every sample access.
 
 ```
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
