@@ -5,12 +5,12 @@
 The experiment pipeline compares two training paths: a standard PyTorch DataLoader path and an ORAM-backed path. Both train the same ResNet-18 model on CIFAR-10. The ORAM path interposes a Path ORAM tree between the dataset and the training loop, adding encrypted block I/O and tree reshuffling to every sample access.
 
 ```
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃             Experiment Orchestrator (scripts/run_experiments.sh)               ┃
-┃┌──────────┐ ┌──────────────┐ ┌───────────────┐ ┌──────────────┐ ┌────────────┐ ┃ ┌─────────────────────────────────────────────────┐
-┃│ Baseline ├─┼─▶ ORAM train ├─┼─▶ Batch Sweep ├─┼─▶ Data Sweep ├─┼─▶ Analysis ├─╂─┼▶  results/ # JSON profiles, logs, plots, report │
-┃└──────────┘ └──────────────┘ └───────────────┘ └──────────────┘ └────────────┘ ┃ └─────────────────────────────────────────────────┘
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃          Experiment Orchestrator (scripts/run_experiments.sh)         ┃
+┃┌──────────┐┌─────────────┐┌──────────────┐┌─────────────┐┌───────────┐┃┌────────────────────────────────────────────────┐
+┃│ Baseline ├┼▶ ORAM train ├┼▶ Batch Sweep ├┼▶ Data Sweep ├┼▶ Analysis ├╂┼▶ results/ # JSON profiles, logs, plots, report │
+┃└──────────┘└─────────────┘└──────────────┘└─────────────┘└───────────┘┃└────────────────────────────────────────────────┘
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
 ```
 
@@ -25,25 +25,15 @@ CIFAR-10 (disk) → torchvision.datasets → DataLoader (4 workers) → GPU
 ### ORAM path
 
 ```
-                                                                                    ┌───────────────┐
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓                                    │ struck.unpack │
-┃        ORAMStorage # AES-enc 4KB blocks      ┃                                    └───────┼───────┘
-┃┌─────────────────┐┌─────────────────────────┐┃┌──────────────┐┌───────────────────────────┴────────────────────────────┐┌────────────────┐
-┃│ CIFAR-10 # disk ├┼▶ load_cifar10_to_oram()◀┼╂┼▶ struct.pack ├┼▶ ORAMStorage.read() # Single-threaded, O(log N) blocks ├┼▶ struck.unpack │
-┃└─────────────────┘└─────────────────────────┘┃└──────────────┘└───────────────────────────┬────────────────────────────┘└────────────────┘
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛                 ┌──────────────────────────┼───────────────────────────┐
-                                                                 │                          ▼                           │
-                                                                 │ ORAMDataset.__getitem__(): Pytorch, num_workers = 0. │
-                                                                 └──────┬───────────────────────────────────────────────┘
-       ▼
-┌────────────────────────────────────────────────────────────────────────────────┐
-│  DataLoader # ObliviousBatchSampler, Custom batch sampler with seeded shuffle. │
-└─────────────────────────┬──────────────────────────────────────────────────────┘
-                          │
-       ▼
-┌──────────────────────────────────┐
-│ GPU (ResNet-18 forward/backward) │
-└──────────────────────────────────┘
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃       ORAMStorage # AES-enc 4KB blocks        ┃
+┃┌─────────────────┐┌──────────────────────────┐┃┌──────────────┐┌───────────────────────────────────────────┐ 
+┃│ CIFAR-10 # disk ├┼▶ load_cifar10_to_oram() ◀┼┃┼▶ struct.pack ├┼▶ ORAMStorage.read() # ST, O(log N) blocks ├────────────┐
+┃└─────────────────┘└──────────────────────────┘┃└──────────────┘└───────────────────────────────────────────┘            │
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛                                                      ┌──────────────────┤
+┌──────────────────┐┌─────────────────────────────────┐┌──────────────────────────────────────────────┐│┌────────────────┐│               
+│ GPU # ResNet-18 ◀┼┤ ObliviousBatchSampler # seeded ◀┼┤ ORAMDataset.__getitem__() # num_workers = 0 ◀┼┴┤ struct.unpack ◀┼┘ 
+└──────────────────┘└─────────────────────────────────┘└──────────────────────────────────────────────┘ └────────────────┘
 ```
 
 ## Profiling architecture
@@ -51,33 +41,28 @@ CIFAR-10 (disk) → torchvision.datasets → DataLoader (4 workers) → GPU
 The `Profiler` singleton instruments every layer of the ORAM data path:
 
 ```
-┌─────────────────────────────────────────────┐
-│                  Profiler                    │
-│  (singleton, thread-safe)                   │
-│                                             │
-│  Categories:                                │
-│  ┌────────────┬──────────────────────────┐  │
-│  │ io         │ ORAM block read/write    │  │
-│  │ oram_read  │ PathORAM.read_block()    │  │
-│  │ oram_write │ PathORAM.write_block()   │  │
-│  │ serialize  │ image → block bytes      │  │
-│  │ deserialize│ block bytes → image      │  │
-│  │ shuffle    │ batch index generation   │  │
-│  │ dataload   │ full __getitem__ cost    │  │
-│  │ compute    │ forward + backward pass  │  │
-│  │ transfer   │ CPU → GPU data transfer  │  │
-│  │ batch      │ total per-batch time     │  │
-│  │ epoch      │ total per-epoch time     │  │
-│  │ setup      │ ORAM tree initialization │  │
-│  └────────────┴──────────────────────────┘  │
-│                                             │
-│  Outputs:                                   │
-│  • TimingStats per category (total, count,  │
-│    min, max, avg)                           │
-│  • MemoryStats (peak RSS, peak VMS)         │
-│  • Per-epoch and per-batch metric records   │
-│  • JSON export for analysis                 │
-└─────────────────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│      Profiler (singleton, thread-safe)        │
+│   ┌────────────┬──────────────────────────┐   │
+│   │ io         │ ORAM block read/write    │   │
+│   │ oram_read  │ PathORAM.read_block()    │   │
+│   │ oram_write │ PathORAM.write_block()   │   │
+│   │ serialize  │ image → block bytes      │   │
+│   │ deserialize│ block bytes → image      │   │
+│   │ shuffle    │ batch index generation   │   │
+│   │ dataload   │ full __getitem__ cost    │   │
+│   │ compute    │ forward + backward pass  │   │
+│   │ transfer   │ CPU → GPU data transfer  │   │
+│   │ batch      │ total per-batch time     │   │
+│   │ epoch      │ total per-epoch time     │   │
+│   │ setup      │ ORAM tree initialization │   │
+│   └────────────┴──────────────────────────┘   │
+│  Outputs:                                     │
+│  • TimingStats (total, count, min, max, avg)  │
+│  • MemoryStats (peak RSS, peak VMS)           │
+│  • Per-epoch and per-batch metric records     │
+│  • JSON export for analysis                   │
+└───────────────────────────────────────────────┘
 ```
 
 ## Block format
