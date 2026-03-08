@@ -1,0 +1,15 @@
+demo:
+  stage: test
+  image: python:3.10
+  timeout: 30m
+  before_script:
+    - pip install --upgrade pip
+    - pip install -r requirements.txt
+  script:
+    - chmod +x scripts/demo.sh
+    - ./scripts/demo.sh
+  artifacts:
+    when: always
+    paths:
+      - results/demo/
+    expire_in: 7 days

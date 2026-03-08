@@ -1,0 +1,30 @@
+# Environment
+.env
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Data (large binary files)
+data/cifar-10-batches-py/
+data/cifar-10-python.tar.gz
+
+# Runtime artifacts
+results/
+*.pth
+
+# LaTeX
+report.log
+report.out
+report.aux
+report.fls
+report.fdb_latexmk
+report.synctex.gz
+*.synctex.gz
+
+# IDE / OS
+.cursor/
+.DS_Store
+node_modules/
