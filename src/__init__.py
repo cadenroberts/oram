@@ -1,14 +1,14 @@
-# ORAM-Integrated PyTorch Training Baseline
-# CSE239A Thesis Project
-
 from .profiler import Profiler, ProfilerContext
 from .oram_storage import ORAMStorage
 from .oram_dataloader import ORAMDataset, create_oram_dataloader
+from .models import create_model, SUPPORTED_MODELS
 
 __all__ = [
     'Profiler',
-    'ProfilerContext', 
+    'ProfilerContext',
     'ORAMStorage',
     'ORAMDataset',
     'create_oram_dataloader',
+    'create_model',
+    'SUPPORTED_MODELS',
 ]

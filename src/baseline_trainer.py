@@ -19,11 +19,12 @@ import torchvision.transforms as transforms
 from tqdm import tqdm
 
 from .profiler import Profiler, ProfilerContext, get_profiler
+from .models import create_model
 
 
 class BaselineTrainer:
     """
-    Standard PyTorch trainer for ResNet-18 on CIFAR-10.
+    Standard PyTorch trainer for CIFAR-10.
     
     This establishes the performance baseline without ORAM overhead.
     """
@@ -36,7 +37,8 @@ class BaselineTrainer:
         momentum: float = 0.9,
         weight_decay: float = 5e-4,
         num_workers: int = 4,
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        model_name: str = "resnet18",
     ):
         self.data_dir = data_dir
         self.batch_size = batch_size
@@ -44,16 +46,20 @@ class BaselineTrainer:
         self.momentum = momentum
         self.weight_decay = weight_decay
         self.num_workers = num_workers
+        self.model_name = model_name
         
-        # Set device
         if device is None:
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            if torch.cuda.is_available():
+                self.device = torch.device('cuda')
+            elif torch.backends.mps.is_available():
+                self.device = torch.device('mps')
+            else:
+                self.device = torch.device('cpu')
         else:
             self.device = torch.device(device)
         
         self.profiler = get_profiler()
         
-        # Initialize components
         self.model = None
         self.optimizer = None
         self.scheduler = None
@@ -116,14 +122,7 @@ class BaselineTrainer:
                 pin_memory=True
             )
             
-            # Create model (ResNet-18 adapted for CIFAR-10)
-            self.model = torchvision.models.resnet18(weights=None)
-            # Modify first conv layer for CIFAR-10 (32x32 images)
-            self.model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-            self.model.maxpool = nn.Identity()  # Remove maxpool for small images
-            # Modify final FC for 10 classes
-            self.model.fc = nn.Linear(512, 10)
-            self.model = self.model.to(self.device)
+            self.model = create_model(self.model_name).to(self.device)
             
             # Create optimizer and scheduler
             self.optimizer = optim.SGD(
@@ -319,24 +318,20 @@ def run_baseline_training(
     num_epochs: int = 100,
     batch_size: int = 128,
     output_dir: str = 'results/baseline',
-    device: Optional[str] = None
+    device: Optional[str] = None,
+    model_name: str = "resnet18",
 ) -> Dict:
     """
     Convenience function to run baseline training.
     
-    Args:
-        num_epochs: Number of training epochs
-        batch_size: Training batch size
-        output_dir: Directory for outputs
-        device: Device to use (auto-detected if None)
-        
     Returns:
         Training history
     """
     with ProfilerContext('baseline', output_dir=output_dir) as profiler:
         trainer = BaselineTrainer(
             batch_size=batch_size,
-            device=device
+            device=device,
+            model_name=model_name,
         )
         trainer.setup()
         history = trainer.train(

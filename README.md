@@ -9,7 +9,7 @@ Path ORAM integration for PyTorch training workflows. Quantifies overhead of hid
 **Prerequisites:** Python 3.8+, 20GB disk, 4GB RAM
 
 ```bash
-git clone <repo-url> && cd OMLO
+git clone git@github.com:cadenroberts/OMLO.git && cd OMLO
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ./scripts/demo.sh
@@ -36,11 +36,11 @@ Demo runs 2 epochs each (baseline + ORAM), ~15 min CPU. Output: `results/demo/`.
 
 | Metric | Baseline | ORAM | Overhead |
 |--------|----------|------|----------|
-| Per-sample load | ~0.01 ms | ~5–15 ms | 500–1500× |
-| Per-epoch wall time | ~30 s | ~45–90 min | 90–180× |
-| Peak memory | ~1.2 GB | ~1.8–2.5 GB | 1.5–2× |
+| Per-sample load | ~0.01 ms | ~5-15 ms | 500-1500x |
+| Per-epoch wall time | ~30 s | ~45-90 min | 90-180x |
+| Peak memory | ~1.2 GB | ~1.8-2.5 GB | 1.5-2x |
 
-ORAM block I/O 60–70%, serialization 5–10%, compute 15–25%. Scaling: O(log N).
+ORAM block I/O 60-70%, serialization 5-10%, compute 15-25%. Scaling: O(log N).
 
 ## Layout
 

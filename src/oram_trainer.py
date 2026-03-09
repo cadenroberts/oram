@@ -16,14 +16,15 @@ import torch.optim as optim
 import torchvision
 from tqdm import tqdm
 
-from .oram_storage import ORAMStorage, load_cifar10_to_oram, BLOCK_SIZE
+from .oram_storage import ORAMStorage, load_cifar10_to_oram, DEFAULT_BLOCK_SIZE
 from .oram_dataloader import create_oram_dataloader, get_cifar10_transforms
 from .profiler import Profiler, ProfilerContext, get_profiler
+from .models import create_model
 
 
 class ORAMTrainer:
     """
-    ORAM-integrated trainer for ResNet-18 on CIFAR-10.
+    ORAM-integrated trainer for CIFAR-10.
     
     Uses ORAM-backed data loading to hide access patterns,
     with comprehensive profiling of overhead sources.
@@ -38,7 +39,11 @@ class ORAMTrainer:
         momentum: float = 0.9,
         weight_decay: float = 5e-4,
         device: Optional[str] = None,
-        num_samples: Optional[int] = None
+        num_samples: Optional[int] = None,
+        backend: str = "file",
+        block_size: int = DEFAULT_BLOCK_SIZE,
+        model_name: str = "resnet18",
+        num_workers: int = 0,
     ):
         self.data_dir = data_dir
         self.oram_storage_path = oram_storage_path
@@ -46,22 +51,28 @@ class ORAMTrainer:
         self.learning_rate = learning_rate
         self.momentum = momentum
         self.weight_decay = weight_decay
+        self.backend = backend
+        self.block_size = block_size
+        self.model_name = model_name
+        self.num_workers = num_workers
         
-        # Set device
         if device is None:
-            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            if torch.cuda.is_available():
+                self.device = torch.device('cuda')
+            elif torch.backends.mps.is_available():
+                self.device = torch.device('mps')
+            else:
+                self.device = torch.device('cpu')
         else:
             self.device = torch.device(device)
         
         self.profiler = get_profiler()
         
-        # Training components
         self.model = None
         self.optimizer = None
         self.scheduler = None
         self.criterion = None
         
-        # ORAM components
         self.oram_storage = None
         self.train_loader = None
         self.test_loader = None
@@ -73,14 +84,15 @@ class ORAMTrainer:
         print("Setting up ORAM-integrated training...")
         
         with self.profiler.track('setup'):
-            # Initialize ORAM storage for training data
-            print(f"Initializing ORAM storage for {self.num_train_samples} samples...")
+            print(f"Initializing ORAM storage for {self.num_train_samples} samples "
+                  f"(backend={self.backend}, block_size={self.block_size})...")
             self.oram_storage = ORAMStorage(
                 num_samples=self.num_train_samples,
                 storage_path=self.oram_storage_path,
+                backend=self.backend,
+                block_size=self.block_size,
             )
             
-            # Load CIFAR-10 into ORAM (with optional sample limit)
             limit = self.num_train_samples if self.num_train_samples < 50000 else None
             print(f"Loading CIFAR-10 training data into ORAM ({self.num_train_samples} samples)...")
             load_cifar10_to_oram(
@@ -91,22 +103,16 @@ class ORAMTrainer:
                 limit=limit
             )
             
-            # Create ORAM-backed training data loader
-            # Note: num_workers must be 0 for ORAM
             self.train_loader = create_oram_dataloader(
                 oram_storage=self.oram_storage,
                 num_samples=self.num_train_samples,
                 batch_size=self.batch_size,
                 shuffle=True,
+                num_workers=self.num_workers,
                 train=True
             )
             
-            # For testing, we use standard loader (test set access pattern
-            # leakage is less critical, and allows faster evaluation)
-            # In a full deployment, test loader would also be ORAM-backed
             self._setup_test_loader()
-            
-            # Create model (ResNet-18 adapted for CIFAR-10)
             self._setup_model()
             
         print(f"Setup complete. Device: {self.device}")
@@ -140,16 +146,9 @@ class ORAMTrainer:
         )
         
     def _setup_model(self):
-        """Initialize ResNet-18 model and optimizer."""
-        self.model = torchvision.models.resnet18(weights=None)
-        # Modify first conv layer for CIFAR-10 (32x32 images)
-        self.model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.model.maxpool = nn.Identity()  # Remove maxpool for small images
-        # Modify final FC for 10 classes
-        self.model.fc = nn.Linear(512, 10)
-        self.model = self.model.to(self.device)
+        """Initialize model and optimizer."""
+        self.model = create_model(self.model_name).to(self.device)
         
-        # Create optimizer and scheduler
         self.optimizer = optim.SGD(
             self.model.parameters(),
             lr=self.learning_rate,
@@ -157,7 +156,6 @@ class ORAMTrainer:
             weight_decay=self.weight_decay
         )
         
-        # Learning rate schedule: decay at epochs 50, 75, 90
         self.scheduler = optim.lr_scheduler.MultiStepLR(
             self.optimizer,
             milestones=[50, 75, 90],
@@ -358,18 +356,15 @@ def run_oram_training(
     batch_size: int = 128,
     output_dir: str = 'results/oram',
     device: Optional[str] = None,
-    num_samples: Optional[int] = None
+    num_samples: Optional[int] = None,
+    backend: str = "file",
+    block_size: int = DEFAULT_BLOCK_SIZE,
+    model_name: str = "resnet18",
+    num_workers: int = 0,
 ) -> Dict:
     """
     Convenience function to run ORAM-integrated training.
     
-    Args:
-        num_epochs: Number of training epochs
-        batch_size: Training batch size
-        output_dir: Directory for outputs
-        device: Device to use (auto-detected if None)
-        num_samples: Number of training samples (None = full 50k)
-        
     Returns:
         Training history
     """
@@ -377,7 +372,11 @@ def run_oram_training(
         trainer = ORAMTrainer(
             batch_size=batch_size,
             device=device,
-            num_samples=num_samples
+            num_samples=num_samples,
+            backend=backend,
+            block_size=block_size,
+            model_name=model_name,
+            num_workers=num_workers,
         )
         try:
             trainer.setup()

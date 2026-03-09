@@ -31,8 +31,9 @@ from src.oram_trainer import run_oram_training
 
 BATCH_SIZES = [32, 64, 128, 256]
 DATASET_SIZES = [1000, 5000, 10000, 50000]
+BLOCK_SIZES = [4096, 8192, 16384, 32768, 65536]
 DEFAULT_BATCH_SIZE = 128
-DEFAULT_DATASET_SIZE = 5000  # Use 5k for sweep to keep runtime manageable
+DEFAULT_DATASET_SIZE = 5000
 
 
 def run_batch_size_sweep(epochs: int, output_root: str, device: str = None):
@@ -157,35 +158,65 @@ def run_dataset_size_sweep(epochs: int, output_root: str, device: str = None):
     return results
 
 
+def run_block_size_sweep(epochs: int, output_root: str, device: str = None):
+    """Sweep over ORAM block sizes."""
+    print("\n" + "=" * 60)
+    print("BLOCK SIZE SWEEP (ORAM)")
+    print("=" * 60)
+
+    results = []
+
+    for bs in BLOCK_SIZES:
+        tag = f"oram_block{bs}"
+        out_dir = os.path.join(output_root, "sweep_block_size", tag)
+        print(f"\n--- ORAM block_size={bs}, epochs={epochs}, samples={DEFAULT_DATASET_SIZE} ---")
+        try:
+            hist = run_oram_training(
+                num_epochs=epochs,
+                batch_size=DEFAULT_BATCH_SIZE,
+                output_dir=out_dir,
+                device=device,
+                num_samples=DEFAULT_DATASET_SIZE,
+                block_size=bs,
+            )
+            results.append({
+                "mode": "oram",
+                "block_size": bs,
+                "num_samples": DEFAULT_DATASET_SIZE,
+                "epochs": epochs,
+                "total_time": hist["total_time"],
+                "best_acc": hist["best_acc"],
+                "final_train_loss": hist["train_loss"][-1],
+            })
+        except Exception as exc:
+            print(f"ERROR in oram block_size={bs}: {exc}")
+            results.append({
+                "mode": "oram",
+                "block_size": bs,
+                "error": str(exc),
+            })
+
+    summary_path = os.path.join(output_root, "sweep_block_size", "sweep_summary.json")
+    os.makedirs(os.path.dirname(summary_path), exist_ok=True)
+    with open(summary_path, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nBlock size sweep summary saved to: {summary_path}")
+
+    return results
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run parameter sweep experiments for ORAM overhead characterization"
     )
     parser.add_argument(
-        "--sweep",
-        type=str,
-        choices=["batch_size", "dataset_size", "all"],
+        "--sweep", type=str,
+        choices=["batch_size", "dataset_size", "block_size", "all"],
         default="all",
-        help="Which sweep to run (default: all)",
     )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=3,
-        help="Epochs per sweep configuration (default: 3)",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="results",
-        help="Root output directory (default: results)",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        help="Device to use (cuda/cpu, default: auto)",
-    )
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--output-dir", type=str, default="results")
+    parser.add_argument("--device", type=str, default=None)
     return parser.parse_args()
 
 
@@ -198,6 +229,9 @@ def main():
 
     if args.sweep in ("dataset_size", "all"):
         run_dataset_size_sweep(args.epochs, args.output_dir, args.device)
+
+    if args.sweep in ("block_size", "all"):
+        run_block_size_sweep(args.epochs, args.output_dir, args.device)
 
     elapsed = time.time() - start
     print(f"\nSweep complete. Total wall-clock time: {elapsed:.1f}s ({elapsed/3600:.2f}h)")

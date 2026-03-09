@@ -23,22 +23,12 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='Run baseline CIFAR-10 training'
     )
-    parser.add_argument(
-        '--epochs', type=int, default=100,
-        help='Number of training epochs (default: 100)'
-    )
-    parser.add_argument(
-        '--batch-size', type=int, default=128,
-        help='Training batch size (default: 128)'
-    )
-    parser.add_argument(
-        '--output-dir', type=str, default='results/baseline',
-        help='Output directory for results (default: results/baseline)'
-    )
-    parser.add_argument(
-        '--device', type=str, default=None,
-        help='Device to use (cuda/cpu, default: auto)'
-    )
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--batch-size', type=int, default=128)
+    parser.add_argument('--output-dir', type=str, default='results/baseline')
+    parser.add_argument('--device', type=str, default=None)
+    parser.add_argument('--model', type=str, default='resnet18',
+                        choices=['resnet18', 'resnet50', 'efficientnet_b0'])
     return parser.parse_args()
 
 
@@ -57,7 +47,8 @@ def main():
         num_epochs=args.epochs,
         batch_size=args.batch_size,
         output_dir=args.output_dir,
-        device=args.device
+        device=args.device,
+        model_name=args.model,
     )
     
     print("\nBaseline training complete!")

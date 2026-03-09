@@ -16,14 +16,14 @@ from pyoram.oblivious_storage.tree.path_oram import PathORAM
 from .profiler import get_profiler
 
 
-# CIFAR-10 image dimensions
 CIFAR_IMAGE_SIZE = 32 * 32 * 3  # 3072 bytes
-LABEL_SIZE = 1  # 1 byte for label (0-9)
-METADATA_SIZE = 4  # 4 bytes for index
+LABEL_SIZE = 1
+METADATA_SIZE = 4
+MIN_BLOCK_SIZE = METADATA_SIZE + LABEL_SIZE + CIFAR_IMAGE_SIZE  # 3077 bytes
 
-# Block size must accommodate image + label + metadata + padding
-# PyORAM requires block sizes to be powers of 2 for efficiency
-BLOCK_SIZE = 4096  # 4KB blocks (fits 3072 + 1 + 4 with room to spare)
+DEFAULT_BLOCK_SIZE = 4096
+
+VALID_BACKENDS = ("file", "ram")
 
 
 class ORAMStorage:
@@ -37,6 +37,7 @@ class ORAMStorage:
     Attributes:
         num_samples: Number of samples stored
         block_size: Size of each ORAM block in bytes
+        backend: Storage backend type ('file' or 'ram')
         oram: Underlying PyORAM PathORAM instance
     """
     
@@ -44,37 +45,42 @@ class ORAMStorage:
         self,
         num_samples: int,
         storage_path: Optional[str] = None,
+        backend: str = "file",
+        block_size: int = DEFAULT_BLOCK_SIZE,
     ):
-        """
-        Initialize ORAM storage.
-        
-        Args:
-            num_samples: Number of samples to store
-            storage_path: Path for ORAM storage file (temp if None)
-        """
+        if backend not in VALID_BACKENDS:
+            raise ValueError(f"backend must be one of {VALID_BACKENDS}, got '{backend}'")
+        if block_size < MIN_BLOCK_SIZE:
+            raise ValueError(
+                f"block_size {block_size} too small for CIFAR-10 "
+                f"(minimum {MIN_BLOCK_SIZE} bytes per sample)")
+
         self.num_samples = num_samples
-        self.block_size = BLOCK_SIZE
+        self.block_size = block_size
+        self.backend = backend
         self.profiler = get_profiler()
         
-        # Set up storage path
-        if storage_path is None:
-            self._temp_dir = tempfile.mkdtemp(prefix='oram_cifar_')
-            storage_path = os.path.join(self._temp_dir, 'oram.bin')
-        else:
+        if backend == "ram":
             self._temp_dir = None
-        self.storage_path = storage_path
+            self.storage_path = storage_path or "oram_ram"
+        else:
+            if storage_path is None:
+                self._temp_dir = tempfile.mkdtemp(prefix='oram_cifar_')
+                storage_path = os.path.join(self._temp_dir, 'oram.bin')
+            else:
+                self._temp_dir = None
+            self.storage_path = storage_path
         
-        # Initialize Path ORAM
         self._init_oram()
     
     def _init_oram(self):
         """Initialize a new ORAM tree."""
         with self.profiler.track('oram_init'):
-            # PathORAM.setup creates the tree structure with encryption
             self.oram = PathORAM.setup(
                 storage_name=self.storage_path,
                 block_size=self.block_size,
                 block_count=self.num_samples,
+                storage_type=self.backend if self.backend != "file" else "file",
             )
     
     def _serialize_sample(self, image: np.ndarray, label: int, index: int) -> bytes:
@@ -208,9 +214,9 @@ class ORAMStorage:
         return {
             'num_samples': self.num_samples,
             'block_size': self.block_size,
+            'backend': self.backend,
             'total_size_mb': (self.num_samples * self.block_size) / (1024 * 1024),
             'storage_path': self.storage_path,
-            # Path ORAM specific stats
             'tree_height': self.oram.tree_height if hasattr(self.oram, 'tree_height') else None,
         }
 

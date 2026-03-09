@@ -23,26 +23,17 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='Run ORAM-integrated CIFAR-10 training'
     )
-    parser.add_argument(
-        '--epochs', type=int, default=100,
-        help='Number of training epochs (default: 100)'
-    )
-    parser.add_argument(
-        '--batch-size', type=int, default=128,
-        help='Training batch size (default: 128)'
-    )
-    parser.add_argument(
-        '--output-dir', type=str, default='results/oram',
-        help='Output directory for results (default: results/oram)'
-    )
-    parser.add_argument(
-        '--device', type=str, default=None,
-        help='Device to use (cuda/cpu, default: auto)'
-    )
-    parser.add_argument(
-        '--num-samples', type=int, default=None,
-        help='Number of training samples (default: full 50k)'
-    )
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--batch-size', type=int, default=128)
+    parser.add_argument('--output-dir', type=str, default='results/oram')
+    parser.add_argument('--device', type=str, default=None)
+    parser.add_argument('--num-samples', type=int, default=None)
+    parser.add_argument('--backend', type=str, default='file',
+                        choices=['file', 'ram'])
+    parser.add_argument('--block-size', type=int, default=4096)
+    parser.add_argument('--model', type=str, default='resnet18',
+                        choices=['resnet18', 'resnet50', 'efficientnet_b0'])
+    parser.add_argument('--num-workers', type=int, default=0)
     return parser.parse_args()
 
 
@@ -55,9 +46,11 @@ def main():
     print(f"Epochs: {args.epochs}")
     print(f"Batch size: {args.batch_size}")
     print(f"Num samples: {args.num_samples or 50000}")
+    print(f"Backend: {args.backend}")
+    print(f"Block size: {args.block_size}")
+    print(f"Model: {args.model}")
+    print(f"Workers: {args.num_workers}")
     print(f"Output dir: {args.output_dir}")
-    print("="*60)
-    print("\nNote: Initial ORAM setup and data loading may take several minutes.")
     print("="*60)
     
     history = run_oram_training(
@@ -65,7 +58,11 @@ def main():
         batch_size=args.batch_size,
         output_dir=args.output_dir,
         device=args.device,
-        num_samples=args.num_samples
+        num_samples=args.num_samples,
+        backend=args.backend,
+        block_size=args.block_size,
+        model_name=args.model,
+        num_workers=args.num_workers,
     )
     
     print("\nORAM training complete!")
