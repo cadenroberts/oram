@@ -47,6 +47,21 @@ The progress report identified six limitations that this evaluation addresses di
 Each phase isolates a single variable while holding all others at baseline values.
 Phases use 2--3 training epochs per configuration; the objective is steady-state throughput measurement, not convergence to final accuracy.
 
+\subsection*{Threat Model Recap}
+
+We retain the threat model from the progress report~\cite{mid}: an honest-but-curious adversary with full visibility into the storage layer (block addresses, timestamps, read/write types) but no access to plaintext data values (AES-encrypted at rest) and no ability to modify the training computation.
+Path ORAM guarantees that for any two equal-length sequences of logical operations, the resulting physical access sequences are computationally indistinguishable~\cite{stefanov2013}.
+ORAM does not hide total access count, wall-clock runtime, or tree capacity.
+
+\subsection*{Related Work}
+
+ORAM was introduced for software protection on oblivious RAMs~\cite{goldreich1996} and made practical by Path ORAM~\cite{stefanov2013}.
+Prior privacy-preserving ML work (federated learning, differential privacy, secure aggregation) protects data values or gradient statistics but not storage-level access patterns.
+SGX-based training systems (Gramine-PyTorch, Plinius) protect memory confidentiality but leak I/O access patterns observable by the OS or hypervisor.
+OBLIVIATOR~\cite{mavrogiannakis2025} provides oblivious operators for database joins, not ML data loading.
+SONIC~\cite{talur2026} proposes concurrent ORAM that could recover the multi-worker parallelism lost by single-threaded Path ORAM.
+PyORAM~\cite{pyoram} provides the underlying Path ORAM implementation; OMLO contributes the \texttt{ORAMDataset} abstraction and PyTorch integration.
+
 \section{Experimental Setup}
 \label{sec:setup}
 
