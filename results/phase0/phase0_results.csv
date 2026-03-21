@@ -1,0 +1,3 @@
+total_time,best_acc,epochs,mode,backend
+405.3775691986084,65.88,3,plaintext,none
+87.65541076660156,30.18,2,oram,file

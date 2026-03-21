@@ -49,7 +49,7 @@ Phases use 2--3 training epochs per configuration; the objective is steady-state
 
 \subsection*{Threat Model Recap}
 
-We retain the threat model from the progress report~\cite{mid}: an honest-but-curious adversary with full visibility into the storage layer (block addresses, timestamps, read/write types) but no access to plaintext data values (AES-encrypted at rest) and no ability to modify the training computation.
+We retain the threat model from the progress report~\cite{mid}: an honest-but-curious adversary with full visibility into the storage layer (block addresses, timestamps, read/write types) but no access to plaintext data values (AES-CTR encrypted at rest) and no ability to modify the training computation.
 Path ORAM guarantees that for any two equal-length sequences of logical operations, the resulting physical access sequences are computationally indistinguishable~\cite{stefanov2013}.
 ORAM does not hide total access count, wall-clock runtime, or tree capacity.
 
@@ -75,7 +75,7 @@ PyORAM~\cite{pyoram} provides the underlying Path ORAM implementation; OMLO cont
 \midrule
 Hardware      & Apple Silicon (MPS backend) \\
 Framework     & PyTorch 2.x \\
-ORAM          & Path ORAM via PyORAM~\cite{pyoram}, AES-encrypted blocks \\
+ORAM          & Path ORAM via PyORAM v0.2.0~\cite{pyoram}, AES-CTR encrypted blocks \\
 Model         & ResNet-18, adapted for CIFAR-10 (3$\times$3 conv1, no maxpool, 512$\to$10 FC) \\
 Dataset       & CIFAR-10 (50K train / 10K test) \\
 Batch size    & 128 \\
@@ -89,6 +89,7 @@ Schedule      & MultiStepLR at epochs 50, 75, 90 ($\gamma$=0.1) \\
 ORAM experiments use reduced sample counts (5K--10K) to keep per-phase runtime tractable while preserving relative overhead ratios.
 Plaintext experiments use the full 50K training set.
 All timing measurements report wall-clock time inclusive of data loading, forward/backward compute, and optimizer steps.
+\textit{Best Acc} in all tables refers to the highest top-1 test-set accuracy observed across epochs within that run.
 
 \section{Baseline Reproduction}
 
@@ -163,7 +164,7 @@ To partially recover parallelism without modifying the ORAM implementation, we i
 
 Adding workers beyond 1 \emph{increases} total time.
 The main-thread ORAM read phase is the critical path; additional workers add inter-process communication overhead (Unix domain socket round-trips, shared-memory segment copies via \texttt{multiprocessing}) that exceeds the benefit of parallelizing transforms on 32$\times$32$\times$3 images.
-CIFAR-10 transforms (normalize, random crop, random flip) take $<$0.05\,ms per sample---negligible relative to the $\sim$0.4\,ms per-sample ORAM read.
+CIFAR-10 transforms (normalize, random crop, random flip) take $<$0.05\,ms per sample---negligible relative to the ${\sim}1.1$\,ms per-sample ORAM read.
 
 This result is specific to small-image datasets.
 For ImageNet-scale images ($\sim$100\,KB, heavier augmentation), the transform cost would dominate and the crossover point for worker benefit would shift.
@@ -172,7 +173,7 @@ Regardless, the mediated architecture cannot reduce the ORAM read phase; recover
 \section{Block-Size Sweep}
 \label{sec:blocksize}
 
-The progress report's overhead decomposition predicted per-access cost proportional to $O(\log N) \times B / S$, where $B$ is the ORAM block size and $S \approx 3072$ bytes is the serialized CIFAR-10 sample size.
+The progress report's overhead decomposition predicted per-access cost proportional to $O(\log N) \times B / S$, where $B$ is the ORAM block size and $S = 3{,}077$ bytes is the serialized CIFAR-10 sample size (4-byte index + 1-byte label + 3{,}072-byte image).
 Increasing $B$ increases the bytes moved per tree-path traversal.
 Decreasing $B$ below $S$ is infeasible without multi-block sample fragmentation.
 
@@ -218,14 +219,15 @@ We test this by varying the model architecture while fixing the ORAM configurati
 \centering
 \caption{Model scaling (plaintext: 50K samples, 3 epochs; ORAM: 5K samples, 2 epochs, file-backed).}
 \label{tab:phase4}
-\begin{tabular}{@{}lrr@{}}
+\begin{tabular}{@{}lrrr@{}}
 \toprule
-\textbf{Model} & \textbf{Plaintext Total (s)} & \textbf{ORAM Total (s)} \\
+\textbf{Model} & \textbf{Plaintext Total (s)} & \textbf{ORAM Total (s)} & \textbf{Overhead$^*$} \\
 \midrule
-ResNet-18        & 455.3  & 54.6  \\
-ResNet-50        & 1322.7 & 150.7 \\
-EfficientNet-B0  & 307.1  & 60.6  \\
+ResNet-18        & 455.3  & 54.6  & 1.8$\times$ \\
+ResNet-50        & 1322.7 & 150.7 & 1.7$\times$ \\
+EfficientNet-B0  & 307.1  & 60.6  & 3.0$\times$ \\
 \bottomrule
+\multicolumn{4}{@{}l}{\footnotesize $^*$Per-sample-per-epoch ratio: $\frac{\text{ORAM}/(2 \times 5\text{K})}{\text{Plaintext}/(3 \times 50\text{K})}$.}
 \end{tabular}
 \end{table}
 
@@ -237,7 +239,7 @@ EfficientNet-B0  & 307.1  & 60.6  \\
 \end{figure}
 
 Per-sample ORAM cost at 5K samples: ResNet-18 = 5.5\,ms, EfficientNet-B0 = 6.1\,ms, ResNet-50 = 15.1\,ms.
-The ResNet-50 per-sample time is 2.7$\times$ higher than ResNet-18, but the model's forward/backward pass is $\sim$6$\times$ more expensive (measured from the plaintext times).
+The ResNet-50 per-sample time is 2.8$\times$ higher than ResNet-18, but the model's forward/backward pass is ${\sim}2.9\times$ more expensive (measured from the plaintext times: $1322.7/455.3$).
 The ORAM I/O component is constant across models (same dataset, same block size, same tree); the per-sample difference is entirely forward/backward compute.
 This confirms the progress report's prediction: at higher compute-to-I/O ratios, ORAM overhead becomes a smaller fraction of total training time.
 
@@ -259,9 +261,10 @@ Total epoch cost is $N \times O(\log N)$, so epoch time should grow slightly fas
 \midrule
 5,000   & 96.4    & 26.25 \\
 10,000  & 159.6   & 29.76 \\
-25,000  & 1,537.6 & 42.42 \\
+25,000$^\dagger$  & 1,537.6 & 42.42 \\
 50,000  & 469.1   & 56.60 \\
 \bottomrule
+\multicolumn{3}{@{}l}{\footnotesize $^\dagger$Anomalous; see text for discussion.}
 \end{tabular}
 \end{table}
 
@@ -274,7 +277,7 @@ Total epoch cost is $N \times O(\log N)$, so epoch time should grow slightly fas
 
 The 5K$\to$10K transition shows 1.66$\times$ time increase for 2$\times$ sample increase, consistent with one additional tree level adding $\sim$7\% per-access cost atop the linear sample-count factor: $2 \times 1.07 \approx 2.14$ predicted vs.\ 1.66 observed (the shortfall is attributable to warm OS page caches reducing effective I/O cost at 10K).
 
-The $N=25{,}000$ data point (1,537.6\,s) is anomalous: the ORAM tree at 25K samples with 4\,KB blocks occupies $\sim$200\,MB, which should fit in memory.
+The $N=25{,}000$ data point (1,537.6\,s) is anomalous: the ORAM tree at 25K samples with 4\,KB blocks occupies ${\sim}256$\,MB ($2^{16}{-}1$ nodes $\times$ 4\,KB), which should fit in memory.
 The most likely explanation is that this phase ran after several large phases filled the filesystem page cache, and the 25K tree triggered eviction thrashing on the file backend.
 The $N=50{,}000$ measurement (469.1\,s) is lower because it ran after the 25K phase had already warmed the page cache and stabilized memory pressure.
 This anomaly underscores the backend sensitivity measured in \S\ref{sec:backend}: file-backed ORAM is sensitive to OS memory management in ways that RAM-backed ORAM is not.
@@ -288,14 +291,15 @@ This anomaly underscores the backend sensitivity measured in \S\ref{sec:backend}
 \label{tab:phase6}
 \begin{tabular}{@{}rrrr@{}}
 \toprule
-\textbf{Batch Size} & \textbf{Plaintext (s)} & \textbf{ORAM (s)} & \textbf{Ratio} \\
+\textbf{Batch Size} & \textbf{Plaintext (s)} & \textbf{ORAM (s)} & \textbf{Overhead$^*$} \\
 \midrule
-32  & 698.0 & 86.4 & 8.1$\times$ \\
-64  & 677.5 & 54.9 & 12.3$\times$ \\
-128 & 451.4 & 52.3 & 8.6$\times$ \\
-256 & 416.0 & 51.5 & 8.1$\times$ \\
-512 & 440.8 & 51.8 & 8.5$\times$ \\
+32  & 698.0 & 86.4 & 1.9$\times$ \\
+64  & 677.5 & 54.9 & 1.2$\times$ \\
+128 & 451.4 & 52.3 & 1.7$\times$ \\
+256 & 416.0 & 51.5 & 1.9$\times$ \\
+512 & 440.8 & 51.8 & 1.8$\times$ \\
 \bottomrule
+\multicolumn{4}{@{}l}{\footnotesize $^*$Per-sample-per-epoch ratio: $\frac{\text{ORAM}/(2 \times 5\text{K})}{\text{Plaintext}/(3 \times 50\text{K})}$.}
 \end{tabular}
 \end{table}
 
@@ -311,10 +315,11 @@ Per-sample ORAM I/O cost is independent of batch size: each \texttt{\_\_getitem\
 The batch=32 outlier (86.4\,s) reflects higher per-batch overhead from more frequent optimizer steps and batch-assembly operations at smaller batch sizes.
 
 Plaintext training benefits from larger batches due to better MPS kernel utilization (larger matrix multiplications saturate the GPU), explaining the 698\,s $\to$ 416\,s reduction from batch=32 to batch=256.
-The uptick at batch=512 is consistent with reduced learning-rate effectiveness at large batch sizes affecting the compute path (more gradient updates per sample at convergence).
+The uptick at batch=512 (440.8\,s vs.\ 416.0\,s, a 6\% increase) is within run-to-run variance and may reflect increased memory pressure from larger batch tensors on the MPS allocator.
 
-The overhead ratio (8--12$\times$ at 5K samples) is substantially lower than the 90--180$\times$ reported in the progress report at 50K samples on CPU.
-The difference has three sources: (1) smaller $N$ reduces tree height and per-access block operations, (2) MPS acceleration reduces the compute baseline (denominator), and (3) sequential phase execution warms the filesystem cache.
+The normalized per-sample overhead (1.2--1.9$\times$) is substantially lower than the 90--180$\times$ reported in the progress report at 50K samples on CPU.
+The difference has three sources: (1) smaller $N$ reduces tree height ($h{=}13$ vs.\ $h{=}16$), cutting per-access I/O by ${\sim}19$\%; (2) MPS acceleration reduces the compute baseline (denominator); and (3) sequential phase execution warms the filesystem cache.
+The 90--180$\times$ range (reported in the abstract) reflects the full 50K-sample, file-backed, CPU-only configuration; the 1.2--1.9$\times$ range reflects the reduced 5K-sample GPU-accelerated configuration.
 
 \section{Access-Pattern Leakage}
 \label{sec:leakage}
@@ -330,14 +335,15 @@ Under standard uniform shuffling, both plaintext and ORAM logical access frequen
 The privacy distinction is not in the logical frequency distribution but in the \emph{physical} access pattern.
 
 In plaintext training, each logical access maps to a single deterministic disk/memory address.
-An adversary monitoring the storage layer sees exactly which sample was read, in what order, and can reconstruct the full epoch permutation.
-Under curriculum learning, hard-example mining, or data-dependent sampling (which we did not use, but which are common in production pipelines), the frequency distribution becomes skewed, and the adversary learns which samples the model finds difficult.
+An adversary monitoring the storage layer sees exactly which sample was read and in what order, enabling reconstruction of the full epoch permutation.
+Under curriculum learning, hard-example mining, or data-dependent sampling (which we did not use, but which are common in production pipelines), the frequency distribution becomes skewed, revealing which samples are accessed more frequently.
 
 With ORAM, each logical access maps to $O(\log N)$ physical block reads along an independently random tree path, followed by a full path write-back.
 The physical access sequence is computationally indistinguishable for any two equal-length logical access sequences~\cite{stefanov2013}.
 The adversary observes the total number of accesses (proportional to epochs $\times$ samples, which we treat as public) but cannot determine which logical indices were accessed.
 
 \section{Combined Optimization}
+\label{sec:combined}
 
 We combine the best settings from prior phases: RAM backend (\S\ref{sec:backend}), 4\,KB blocks (\S\ref{sec:blocksize}), batch size 128.
 Based on the worker-scaling results (\S\ref{sec:workers}), the optimal worker count for CIFAR-10 is 0; we include a \texttt{num\_workers=4} configuration to confirm.
@@ -352,12 +358,13 @@ Based on the worker-scaling results (\S\ref{sec:workers}), the optimal worker co
 \midrule
 Plaintext (50K, 4 workers)       & 3 & 409.6 & 50.15 \\
 ORAM baseline (file, w=0)        & 2 & 84.8  & 29.04 \\
-ORAM optimized (ram, w=4)        & 2 & 144.2 & 25.49 \\
+ORAM combined (ram, w=4)         & 2 & 144.2 & 25.49 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The ``optimized'' configuration is slower (144.2\,s vs.\ 84.8\,s), confirming that the multi-worker IPC cost dominates any benefit from the RAM backend at this image size.
+The ``combined'' configuration (RAM backend with 4 workers) is slower (144.2\,s vs.\ 84.8\,s), confirming that the multi-worker IPC cost dominates any benefit from the RAM backend at this image size.
+This is not an optimized configuration but a test of combining two settings; the result demonstrates that they interact negatively for CIFAR-10.
 The optimal ORAM configuration for CIFAR-10 is: RAM backend, \texttt{num\_workers=0}, 4\,KB blocks.
 Under this configuration, the RAM backend alone would yield $\sim$84.8 $\times$ 0.84 $\approx$ 71\,s (extrapolating the 16\% backend improvement from \S\ref{sec:backend}), or $\sim$35.5\,s/epoch at 10K samples.
 
@@ -386,7 +393,6 @@ These measurements scope the design space for practical ORAM integration in ML s
 \smallskip
 \noindent Source code and experimental scripts: \url{https://github.com/cadenroberts/OMLO}.
 
-\bibliographystyle{plainnat}
 \begin{thebibliography}{7}
 
 \bibitem[Roberts(2026a)]{mid}
@@ -407,11 +413,11 @@ E.~Stefanov, M.~van Dijk, E.~Shi, C.~Fletcher, L.~Ren, X.~Yu, and S.~Devadas.
 \bibitem[Talur and Demertzis(2026)]{talur2026}
 A.~Talur and I.~Demertzis.
 \newblock {SONIC}: Concurrent oblivious {RAM}.
-\newblock In \emph{Proc.\ USENIX Security}, 2026.
+\newblock In \emph{Proc.\ USENIX Security} (to appear, 2026).
 
 \bibitem[Mavrogiannakis et~al.(2025)]{mavrogiannakis2025}
 A.~Mavrogiannakis et~al.
-\newblock {OBLIVIATOR}.
+\newblock {OBLIVIATOR}: Oblivious parallel operators for secure database joins.
 \newblock In \emph{Proc.\ USENIX Security}, 2025.
 
 \bibitem[Ngai et~al.(2024)]{ngai2024}
@@ -421,8 +427,8 @@ B.~Ngai et~al.
 
 \bibitem[PyORAM()]{pyoram}
 G.~Hackebeil.
-\newblock {PyORAM}: Python {ORAM} implementation.
-\newblock \url{https://github.com/ghackebeil/PyORAM}.
+\newblock {PyORAM}: Python {ORAM} implementation, v0.2.0.
+\newblock \url{https://github.com/ghackebeil/PyORAM}. Accessed March 2026.
 
 \end{thebibliography}
 

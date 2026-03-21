@@ -6,7 +6,7 @@ torch>=2.0.0
 torchvision>=0.15.0
 
 # ORAM Implementation
-pyoram>=0.3.0
+pyoram>=0.2.1
 
 # Cryptography (PyORAM backend)
 cryptography>=41.0.0
@@ -19,6 +19,15 @@ matplotlib>=3.7.0
 pandas>=2.0.0
 seaborn>=0.12.0
 numpy>=1.24.0
+
+# Machine Learning
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+
+# OS-Level Tracing (Linux only, optional)
+# For eBPF trace capture: sudo apt install bpfcc-tools python3-bpfcc
+# bcc is not pip-installable, must use system package manager
+# Fallback: strace (usually pre-installed on Linux)
 
 # Utilities
 tqdm>=4.65.0

@@ -8,20 +8,19 @@ __pycache__/
 *.pyc
 
 # Data (large binary files)
-data/cifar-10-batches-py/
-data/cifar-10-python.tar.gz
+data/
+experiments/data/
 
 # Runtime artifacts
 results/
 *.pth
 
-# LaTeX
-report.log
-report.out
-report.aux
-report.fls
-report.fdb_latexmk
-report.synctex.gz
+# LaTeX build artifacts
+*.log
+*.out
+*.aux
+*.fls
+*.fdb_latexmk
 *.synctex.gz
 
 # IDE / OS

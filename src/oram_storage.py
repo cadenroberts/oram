@@ -8,12 +8,13 @@ as encrypted blocks, enabling oblivious data access for ML training.
 import os
 import tempfile
 import struct
+import time
 from typing import Tuple, Optional
 import numpy as np
 
 from pyoram.oblivious_storage.tree.path_oram import PathORAM
 
-from .profiler import get_profiler
+from .oram.profiler import get_profiler
 
 
 CIFAR_IMAGE_SIZE = 32 * 32 * 3  # 3072 bytes
@@ -74,7 +75,6 @@ class ORAMStorage:
         self._init_oram()
     
     def _init_oram(self):
-        """Initialize a new ORAM tree."""
         with self.profiler.track('oram_init'):
             self.oram = PathORAM.setup(
                 storage_name=self.storage_path,
@@ -82,6 +82,24 @@ class ORAMStorage:
                 block_count=self.num_samples,
                 storage_type=self.backend if self.backend != "file" else "file",
             )
+
+    def _audit_io(self, op: str, index: int) -> None:
+        """Append ORAM I/O evidence when ORAM_AUDIT_LOG is set."""
+        log_path = os.environ.get("ORAM_AUDIT_LOG")
+        if not log_path:
+            return
+        include_index = os.environ.get("ORAM_AUDIT_INCLUDE_INDEX", "0") == "1"
+        fields = [
+            f"{time.time():.6f}",
+            f"op={op}",
+            f"backend={self.backend}",
+            f"storage_path={self.storage_path}",
+        ]
+        if include_index:
+            fields.append(f"index={index}")
+        line = ",".join(fields) + "\n"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
     
     def _serialize_sample(self, image: np.ndarray, label: int, index: int) -> bytes:
         """
@@ -90,13 +108,8 @@ class ORAMStorage:
         Format: [index (4 bytes)] [label (1 byte)] [image (3072 bytes)] [padding]
         """
         with self.profiler.track('serialize'):
-            # Pack metadata
             header = struct.pack('<IB', index, label)
-            
-            # Flatten and convert image to bytes
             image_bytes = image.astype(np.uint8).tobytes()
-            
-            # Combine and pad to block size
             data = header + image_bytes
             padding = bytes(self.block_size - len(data))
             
@@ -110,13 +123,8 @@ class ORAMStorage:
             Tuple of (image, label, index)
         """
         with self.profiler.track('deserialize'):
-            # Unpack header
             index, label = struct.unpack('<IB', data[:5])
-            
-            # Extract image bytes
             image_bytes = data[5:5 + CIFAR_IMAGE_SIZE]
-            
-            # Reconstruct image array (32x32x3)
             image = np.frombuffer(image_bytes, dtype=np.uint8)
             image = image.reshape(32, 32, 3)
             
@@ -134,13 +142,11 @@ class ORAMStorage:
         if index < 0 or index >= self.num_samples:
             raise ValueError(f"Index {index} out of range [0, {self.num_samples})")
         
-        # Serialize sample
         block_data = self._serialize_sample(image, label, index)
-        
-        # Write to ORAM (includes crypto and shuffling internally)
         with self.profiler.track('io'):
             with self.profiler.track('oram_write'):
                 self.oram.write_block(index, block_data)
+                self._audit_io("write", index)
     
     def read(self, index: int) -> Tuple[np.ndarray, int]:
         """
@@ -155,15 +161,12 @@ class ORAMStorage:
         if index < 0 or index >= self.num_samples:
             raise ValueError(f"Index {index} out of range [0, {self.num_samples})")
         
-        # Read from ORAM (includes crypto and shuffling internally)
         with self.profiler.track('io'):
             with self.profiler.track('oram_read'):
                 block_data = self.oram.read_block(index)
+                self._audit_io("read", index)
         
-        # Deserialize
         image, label, stored_index = self._deserialize_sample(block_data)
-        
-        # Verify index consistency
         assert stored_index == index, f"Index mismatch: {stored_index} != {index}"
         
         return image, label
@@ -193,11 +196,9 @@ class ORAMStorage:
         return np.stack(images), np.array(labels)
     
     def close(self):
-        """Close ORAM storage and clean up resources."""
         if hasattr(self, 'oram') and self.oram is not None:
             self.oram.close()
         
-        # Clean up temp directory if we created one
         if self._temp_dir is not None and os.path.exists(self._temp_dir):
             import shutil
             shutil.rmtree(self._temp_dir, ignore_errors=True)
@@ -210,7 +211,6 @@ class ORAMStorage:
         return False
     
     def get_stats(self) -> dict:
-        """Get storage statistics."""
         return {
             'num_samples': self.num_samples,
             'block_size': self.block_size,
@@ -244,16 +244,14 @@ def load_cifar10_to_oram(
     import torchvision
     from tqdm import tqdm
     
-    # Download/load CIFAR-10
     dataset = torchvision.datasets.CIFAR10(
         root=data_dir,
         train=train,
         download=True
     )
     
-    # Get numpy arrays
-    images = dataset.data  # (N, 32, 32, 3)
-    labels = dataset.targets  # List of ints
+    images = dataset.data
+    labels = dataset.targets
     
     num_samples = len(labels)
     if limit is not None:
@@ -262,7 +260,6 @@ def load_cifar10_to_oram(
     assert num_samples <= oram_storage.num_samples, \
         f"ORAM storage too small: {oram_storage.num_samples} < {num_samples}"
     
-    # Load samples into ORAM
     iterator = range(num_samples)
     if progress:
         iterator = tqdm(iterator, desc="Loading CIFAR-10 to ORAM")

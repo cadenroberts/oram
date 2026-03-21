@@ -1,0 +1,4 @@
+total_time,best_acc,epochs,config
+409.5860879421234,50.15,3,plaintext
+84.84361386299133,29.04,2,oram_baseline
+144.21677112579346,25.49,2,oram_optimized

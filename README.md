@@ -1,60 +1,84 @@
 # OMLO: Oblivious ML-Ops
 
-Path ORAM integration for PyTorch training workflows. Quantifies overhead of hiding data-dependent access patterns during ML training.
+Path ORAM integration for PyTorch training workflows, with experiments that characterize storage-level access-pattern observability and ORAM overhead.
 
 [[_TOC_]]
 
-## Quick start
+## Repository Layout
 
-**Prerequisites:** Python 3.8+, 20GB disk, 4GB RAM
+```text
+src/                     Core ORAM + training implementations
+experiments/run.py       Unified experiment runner (baseline, oram, phases, sweep, sidecar)
+experiments/generate.py  Event log and LaTeX table generation
+experiments/attack.py    Membership inference attack implementations
+experiments/plot.py      Plotting utilities
+experiments/test.py      Consolidated test suite
+experiments/device.py    Device resolution and sidecar logger
+scripts/run.sh           Experiment orchestration
+scripts/test.sh          Unified test runner (smoke, attack, macos)
+scripts/results.sh       Paper-ready result generation
+README.md                Project documentation
+```
+
+## Quick Start
 
 ```bash
-git clone git@github.com:cadenroberts/OMLO.git && cd OMLO
-python -m venv venv && source venv/bin/activate
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
-./scripts/demo.sh
 ```
 
-Demo runs 2 epochs each (baseline + ORAM), ~15 min CPU. Output: `results/demo/`.
+Run a fast smoke test:
 
-**Full pipeline (~40 hr):** `./scripts/run_experiments.sh`
-
-| Issue | Fix |
-|-------|-----|
-| `No module named 'pyoram'` | `pip install -r requirements.txt` |
-| CUDA OOM | `--batch-size 64` or `--device cpu` |
-| Lock file | `rm results/.experiment_lock` |
-
-## Architecture
-
-**Standard:** `CIFAR-10 → torchvision → DataLoader (4 workers) → GPU → ResNet-18`  
-**ORAM:** `CIFAR-10 → ORAMStorage (AES 4KB blocks) → ORAMDataset → DataLoader (0 workers) → GPU → ResNet-18`
-
-`num_workers=0` required (PyORAM not thread-safe). O(log N) blocks per access.
-
-## Results
-
-| Metric | Baseline | ORAM | Overhead |
-|--------|----------|------|----------|
-| Per-sample load | ~0.01 ms | ~5-15 ms | 500-1500x |
-| Per-epoch wall time | ~30 s | ~45-90 min | 90-180x |
-| Peak memory | ~1.2 GB | ~1.8-2.5 GB | 1.5-2x |
-
-ORAM block I/O 60-70%, serialization 5-10%, compute 15-25%. Scaling: O(log N).
-
-## Layout
-
-```
-src/           # oram_storage, oram_dataloader, oram_trainer, baseline_trainer
-experiments/   # run_baseline, run_oram, run_sweep, analyze_results
-scripts/       # demo.sh, run_experiments.sh
-report.tex     # pdflatex report.tex (run twice)
+```bash
+bash scripts/test.sh smoke
 ```
 
-## Reference
+## Main Pipelines
 
-**Report:** `pdflatex report.tex` (twice for refs)
+### End-to-end traced runner
 
-**Limitations:** Single model/dataset (ResNet-18, CIFAR-10), CPU-only, single-threaded ORAM, batch shuffle not oblivious.
+```bash
+python experiments/run.py experiments \
+  --dataset_root dataset_root \
+  --output_root experiments_out \
+  --device cpu \
+  --epochs 3 \
+  --visibilities 1.0,0.5,0.25,0.1
+```
 
-**Future:** Concurrent ORAM (SONIC), oblivious shuffling, larger models, GPU crypto.
+### Plotting
+
+```bash
+python experiments/plot.py robustness \
+  --summary experiments_out/summary.csv \
+  --output figures/attack_robustness.pdf
+
+python experiments/plot.py privacy \
+  --summary experiments_out/summary.csv \
+  --output figures/privacy_tradeoff.pdf
+```
+
+### Phase runner
+
+```bash
+python experiments/run.py phases --phase all
+```
+
+### Script-based orchestration
+
+```bash
+bash scripts/run.sh experiments
+```
+
+## Key Utilities
+
+- Test ORAM integration: `python experiments/test.py sweep`
+- Test attack setup: `python experiments/test.py setup`
+- Test complete system: `python experiments/test.py system`
+
+## Notes
+
+- `experiments/run.py sidecar` uses the real ORAM trainer path through `src/oram/trainer.py` and `src/oram_storage.py`.
+- Some scripts require Linux tooling (`strace`, optional BCC/eBPF) for OS-level tracing workflows.
+- If `pyoram` is missing, install requirements and ensure the active environment is the project venv.

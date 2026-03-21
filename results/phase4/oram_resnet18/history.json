@@ -1,0 +1,36 @@
+{
+  "epochs": [
+    1,
+    2
+  ],
+  "train_loss": [
+    3.5470460072541847,
+    2.2013901258126283
+  ],
+  "train_acc": [
+    10.536858974358974,
+    17.067307692307693
+  ],
+  "test_loss": [
+    0,
+    2.085684125936484
+  ],
+  "test_acc": [
+    0,
+    18.03
+  ],
+  "lr": [
+    0.1,
+    0.1
+  ],
+  "oram_config": {
+    "num_samples": 5000,
+    "block_size": 4096,
+    "backend": "file",
+    "total_size_mb": 19.53125,
+    "storage_path": "/var/folders/8r/0twg94tn14b7_41wwk7fg_740000gn/T/oram_cifar__g17bgh3/oram.bin",
+    "tree_height": null
+  },
+  "total_time": 54.64797592163086,
+  "best_acc": 18.03
+}

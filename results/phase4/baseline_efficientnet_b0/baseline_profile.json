@@ -1,0 +1,201 @@
+{
+  "summary": {
+    "timings": {
+      "setup": {
+        "total_time": 1.36646354199911,
+        "call_count": 1,
+        "avg_time": 1.36646354199911,
+        "min_time": 1.36646354199911,
+        "max_time": 1.36646354199911
+      },
+      "dataload": {
+        "total_time": 0.46484034150489606,
+        "call_count": 1170,
+        "avg_time": 0.00039729943718367185,
+        "min_time": 6.354101060424e-05,
+        "max_time": 0.05130412499420345
+      },
+      "compute": {
+        "total_time": 173.44908692713943,
+        "call_count": 2340,
+        "avg_time": 0.07412354142185446,
+        "min_time": 0.01092470801086165,
+        "max_time": 4.654127083995263
+      },
+      "batch": {
+        "total_time": 192.6535927921359,
+        "call_count": 1170,
+        "avg_time": 0.16466119042062896,
+        "min_time": 0.07190650000120513,
+        "max_time": 8.205450166991795
+      },
+      "epoch": {
+        "total_time": 306.5722427368164,
+        "call_count": 3,
+        "avg_time": 102.1907475789388,
+        "min_time": 78.37723803520203,
+        "max_time": 141.77862191200256
+      }
+    },
+    "memory": {
+      "peak_rss_mb": 56.203125,
+      "peak_vms_mb": 425810.25,
+      "sample_count": 5
+    },
+    "epochs": 3,
+    "total_batches": 0
+  },
+  "overhead_breakdown": {
+    "setup": 0.20258723917414698,
+    "dataload": 0.06891564871498479,
+    "compute": 25.714971953396393,
+    "batch": 28.56216670343084,
+    "epoch": 45.45135845528363
+  },
+  "epoch_data": [
+    {
+      "epoch": 1,
+      "timings": {
+        "setup": {
+          "total_time": 1.36646354199911,
+          "call_count": 1,
+          "avg_time": 1.36646354199911,
+          "min_time": 1.36646354199911,
+          "max_time": 1.36646354199911
+        },
+        "dataload": {
+          "total_time": 0.09602096081653144,
+          "call_count": 390,
+          "avg_time": 0.0002462075918372601,
+          "min_time": 6.658400525338948e-05,
+          "max_time": 0.0019471249979687855
+        },
+        "compute": {
+          "total_time": 44.62688003893709,
+          "call_count": 780,
+          "avg_time": 0.05721394876786806,
+          "min_time": 0.01092470801086165,
+          "max_time": 4.654127083995263
+        },
+        "batch": {
+          "total_time": 52.270531714035315,
+          "call_count": 390,
+          "avg_time": 0.13402700439496235,
+          "min_time": 0.07190650000120513,
+          "max_time": 8.205450166991795
+        }
+      },
+      "memory": {
+        "peak_rss_mb": 56.203125,
+        "peak_vms_mb": 425607.59375,
+        "sample_count": 1
+      },
+      "metrics": {
+        "train_loss": 2.458870977621812,
+        "train_acc": 16.392227564102566,
+        "lr": 0.1
+      }
+    },
+    {
+      "epoch": 2,
+      "timings": {
+        "setup": {
+          "total_time": 1.36646354199911,
+          "call_count": 1,
+          "avg_time": 1.36646354199911,
+          "min_time": 1.36646354199911,
+          "max_time": 1.36646354199911
+        },
+        "dataload": {
+          "total_time": 0.24092475872021168,
+          "call_count": 780,
+          "avg_time": 0.0003088778957951432,
+          "min_time": 6.354101060424e-05,
+          "max_time": 0.022164750000229105
+        },
+        "compute": {
+          "total_time": 99.21979288189323,
+          "call_count": 1560,
+          "avg_time": 0.06360243133454695,
+          "min_time": 0.01092470801086165,
+          "max_time": 4.654127083995263
+        },
+        "batch": {
+          "total_time": 111.534509415098,
+          "call_count": 780,
+          "avg_time": 0.14299296078858717,
+          "min_time": 0.07190650000120513,
+          "max_time": 8.205450166991795
+        },
+        "epoch": {
+          "total_time": 78.37723803520203,
+          "call_count": 1,
+          "avg_time": 78.37723803520203,
+          "min_time": 78.37723803520203,
+          "max_time": 78.37723803520203
+        }
+      },
+      "memory": {
+        "peak_rss_mb": 56.203125,
+        "peak_vms_mb": 425805.03125,
+        "sample_count": 2
+      },
+      "metrics": {
+        "train_loss": 1.9645209486667927,
+        "train_acc": 24.270833333333332,
+        "lr": 0.1
+      }
+    },
+    {
+      "epoch": 3,
+      "timings": {
+        "setup": {
+          "total_time": 1.36646354199911,
+          "call_count": 1,
+          "avg_time": 1.36646354199911,
+          "min_time": 1.36646354199911,
+          "max_time": 1.36646354199911
+        },
+        "dataload": {
+          "total_time": 0.46484034150489606,
+          "call_count": 1170,
+          "avg_time": 0.00039729943718367185,
+          "min_time": 6.354101060424e-05,
+          "max_time": 0.05130412499420345
+        },
+        "compute": {
+          "total_time": 173.44908692713943,
+          "call_count": 2340,
+          "avg_time": 0.07412354142185446,
+          "min_time": 0.01092470801086165,
+          "max_time": 4.654127083995263
+        },
+        "batch": {
+          "total_time": 192.6535927921359,
+          "call_count": 1170,
+          "avg_time": 0.16466119042062896,
+          "min_time": 0.07190650000120513,
+          "max_time": 8.205450166991795
+        },
+        "epoch": {
+          "total_time": 164.79362082481384,
+          "call_count": 2,
+          "avg_time": 82.39681041240692,
+          "min_time": 78.37723803520203,
+          "max_time": 86.41638278961182
+        }
+      },
+      "memory": {
+        "peak_rss_mb": 56.203125,
+        "peak_vms_mb": 425806.25,
+        "sample_count": 3
+      },
+      "metrics": {
+        "train_loss": 1.8238010886387948,
+        "train_acc": 30.889423076923077,
+        "lr": 0.1
+      }
+    }
+  ],
+  "batch_data": []
+}
