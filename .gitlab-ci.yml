@@ -6,8 +6,8 @@ demo:
     - pip install --upgrade pip
     - pip install -r requirements.txt
   script:
-    - chmod +x scripts/test.sh
-    - ./scripts/test.sh smoke
+    - chmod +x run.sh
+    - ./run.sh smoke
   artifacts:
     when: always
     paths:

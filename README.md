@@ -1,23 +1,14 @@
 # OMLO: Oblivious ML-Ops
 
-Path ORAM integration for PyTorch training workflows, with experiments that characterize storage-level access-pattern observability and ORAM overhead.
+Path ORAM integration for PyTorch training. Experiments characterize storage-level access-pattern observability and ORAM overhead.
 
-[[_TOC_]]
+## Structure
 
-## Repository Layout
-
-```text
-src/                     Core ORAM + training implementations
-experiments/run.py       Unified experiment runner (baseline, oram, phases, sweep, sidecar)
-experiments/generate.py  Event log and LaTeX table generation
-experiments/attack.py    Membership inference attack implementations
-experiments/plot.py      Plotting utilities
-experiments/test.py      Consolidated test suite
-experiments/device.py    Device resolution and sidecar logger
-scripts/run.sh           Experiment orchestration
-scripts/test.sh          Unified test runner (smoke, attack, macos)
-scripts/results.sh       Paper-ready result generation
-README.md                Project documentation
+```
+src/run.py          Unified runner (training, generation, attack, plotting)
+src/oram.py         ORAM storage, dataloader, trainer
+run.sh              Shell orchestrator (repo root)
+reports/            Paper PDFs and LaTeX sources
 ```
 
 ## Quick Start
@@ -26,59 +17,49 @@ README.md                Project documentation
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+bash run.sh smoke
 ```
 
-Run a fast smoke test:
+## Commands
+
+### Training
 
 ```bash
-bash scripts/test.sh smoke
+python src/run.py baseline --epochs 5 --batch_size 128
+python src/run.py oram --epochs 5 --batch_size 128
 ```
 
-## Main Pipelines
-
-### End-to-end traced runner
+### Event Generation
 
 ```bash
-python experiments/run.py experiments \
-  --dataset_root dataset_root \
-  --output_root experiments_out \
-  --device cpu \
-  --epochs 3 \
-  --visibilities 1.0,0.5,0.25,0.1
+python src/run.py event --train_size 10000 --epochs 5 --output events.csv --mode plaintext
+```
+
+### Membership Inference
+
+```bash
+python src/run.py mi --input events.csv --output_dir results/attack --visibility 1.0
 ```
 
 ### Plotting
 
 ```bash
-python experiments/plot.py robustness \
-  --summary experiments_out/summary.csv \
-  --output figures/attack_robustness.pdf
-
-python experiments/plot.py privacy \
-  --summary experiments_out/summary.csv \
-  --output figures/privacy_tradeoff.pdf
+python src/run.py privacy --summary results/summary.csv --output figures/privacy.pdf
+python src/run.py robustness --summary results/summary.csv --output figures/robustness.pdf
 ```
 
-### Phase runner
+### Full Pipelines
 
 ```bash
-python experiments/run.py phases --phase all
+bash run.sh experiments    # all phases
+bash run.sh visibility     # partial observability sweep
+bash run.sh trace          # OS-level trace (Linux)
+bash run.sh smoke          # quick test
 ```
-
-### Script-based orchestration
-
-```bash
-bash scripts/run.sh experiments
-```
-
-## Key Utilities
-
-- Test ORAM integration: `python experiments/test.py sweep`
-- Test attack setup: `python experiments/test.py setup`
-- Test complete system: `python experiments/test.py system`
 
 ## Notes
 
-- `experiments/run.py sidecar` uses the real ORAM trainer path through `src/oram/trainer.py` and `src/oram_storage.py`.
-- Some scripts require Linux tooling (`strace`, optional BCC/eBPF) for OS-level tracing workflows.
-- If `pyoram` is missing, install requirements and ensure the active environment is the project venv.
+- Linux tracing requires `strace` or BCC/eBPF
+- macOS tracing uses `fs_usage` (requires sudo)
+- XGBoost optional but recommended for best attack performance
+- ORAM uses PyORAM Path ORAM implementation
