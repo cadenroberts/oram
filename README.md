@@ -1,6 +1,45 @@
-# OMLO: Oblivious ML-Ops
+# OMLO — Privacy-Preserving ML Training System
 
-Path ORAM integration for PyTorch training. Experiments characterize storage-level access-pattern observability and ORAM overhead.
+OMLO is a privacy-preserving ML training system that integrates Path ORAM into GPU-accelerated PyTorch pipelines to eliminate data-dependent memory access patterns.
+
+It explores the tradeoff between privacy guarantees and training performance under O(log N) ORAM overhead and GPU memory constraints.
+
+## System Overview
+
+OMLO inserts an ORAM-backed data access layer into the ML training pipeline:
+
+```text
+Dataset
+   ↓
+ORAM Layer (Path ORAM)
+   ↓
+DataLoader
+   ↓
+GPU Training (PyTorch)
+   ↓
+Evaluation + Attack Pipeline
+```
+
+This ensures memory access patterns are independent of input data, mitigating access-pattern leakage.
+
+## Key Challenges
+
+- ORAM introduces O(log N) access overhead → reduces effective training throughput
+- GPU underutilization due to serialized memory access patterns
+- Memory pressure from ORAM tree structures during training
+- Balancing privacy guarantees vs training efficiency
+
+## Design Decisions
+
+- **Path ORAM** chosen for simplicity and well-defined access guarantees
+- Integrated at the **data access layer** to preserve compatibility with PyTorch training loops
+- Built an **attack pipeline (membership inference)** to empirically evaluate leakage
+
+## Findings
+
+- ORAM overhead introduces measurable slowdown in training throughput
+- Access pattern leakage is mitigated under adversarial observation
+- Tradeoff observed between privacy strength and system efficiency
 
 ## Structure
 
