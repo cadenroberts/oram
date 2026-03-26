@@ -122,8 +122,8 @@ experiments() {
             log "Phase 1 START: Baseline training (100 epochs, bs=128)"
             "$PYTHON" src/run.py baseline \
                 --epochs 100 \
-                --batch-size 128 \
-                --output-dir "$BASELINE_DIR" \
+                --batch_size 128 \
+                --output_dir "$BASELINE_DIR" \
                 2>&1 | tee "${LOG_DIR}/baseline_${TIMESTAMP}.log"
             log "Phase 1 DONE"
         fi
@@ -136,10 +136,10 @@ experiments() {
             log "Phase 2 SKIP: ORAM results already exist at $ORAM_MARKER"
         else
             log "Phase 2 START: ORAM training (10 epochs, 50k samples, bs=128)"
-            "$PYTHON" src/run.py sweep \
+            "$PYTHON" src/run.py oram \
                 --epochs 10 \
-                --batch-size 128 \
-                --output-dir "$ORAM_DIR" \
+                --batch_size 128 \
+                --output_dir "$ORAM_DIR" \
                 2>&1 | tee "${LOG_DIR}/oram_${TIMESTAMP}.log"
             log "Phase 2 DONE"
         fi
@@ -154,7 +154,7 @@ experiments() {
             "$PYTHON" src/run.py sweep \
                 --sweep batch_size \
                 --epochs 3 \
-                --output-dir results \
+                --output_dir results \
                 2>&1 | tee "${LOG_DIR}/sweep_bs_${TIMESTAMP}.log"
             log "Phase 3 DONE"
         fi
@@ -169,7 +169,7 @@ experiments() {
             "$PYTHON" src/run.py sweep \
                 --sweep dataset_size \
                 --epochs 2 \
-                --output-dir results \
+                --output_dir results \
                 2>&1 | tee "${LOG_DIR}/sweep_ds_${TIMESTAMP}.log"
             log "Phase 4 DONE"
         fi
@@ -178,7 +178,7 @@ experiments() {
     if [ -z "$PHASE" ] || [ "$PHASE" = "5" ]; then
         log "Phase 5 START: Analysis and report generation"
         "$PYTHON" src/run.py plot \
-            --results-root results \
+            --results_root results \
             --output results/figures \
             2>&1 | tee "${LOG_DIR}/analysis_${TIMESTAMP}.log"
         log "Phase 5 DONE"
@@ -201,7 +201,7 @@ pipeline() {
     "$PYTHON" src/run.py phases --phase all
 
     log "Running analysis"
-    "$PYTHON" src/run.py plot --results-root results --output results/figures
+    "$PYTHON" src/run.py plot --results_root results --output results/figures
 
     log "Pipeline finished"
 }
@@ -212,6 +212,7 @@ pipeline() {
 
 trace() {
     cd "$PROJECT_ROOT"
+    ensure_venv
 
     echo "=== OS-Level Trace Capture Pipeline ==="
     echo ""
@@ -254,7 +255,7 @@ trace() {
 
     echo ""
     echo "=== STEP 1: Materialize Dataset ==="
-    python3 src/run.py files \
+    $PYTHON src/run.py files \
         --output_root "$DATASET_ROOT" \
         --train_size $TRAIN_SIZE \
         --holdout_size $HOLDOUT_SIZE \
@@ -273,7 +274,7 @@ trace() {
 
     echo ""
     echo "=== STEP 3: Start Training (Background) ==="
-    python3 src/run.py train \
+    $PYTHON src/run.py train \
         --dataset_root "$DATASET_ROOT" \
         --batch_size $BATCH_SIZE \
         --epochs $EPOCHS \
@@ -290,7 +291,7 @@ trace() {
     local TRACE_PID
     if [ $USE_EBPF -eq 1 ]; then
         echo "Using eBPF trace capture..."
-        sudo python3 src/run.py trace \
+        sudo $PYTHON src/run.py trace \
             --pid $TRAIN_PID \
             --output "$TRACE_OUTPUT" &
         TRACE_PID=$!
@@ -313,13 +314,13 @@ trace() {
     echo ""
     echo "=== STEP 5: Convert Traces to Attack CSV ==="
     if [ $USE_EBPF -eq 1 ]; then
-        python3 src/run.py convert \
+        $PYTHON src/run.py convert \
             --trace_input "$TRACE_OUTPUT" \
             --trace_mode ebpf_csv \
             --sidecar "$SIDECAR" \
             --output "$EVENTS_OUTPUT"
     else
-        python3 src/run.py convert \
+        $PYTHON src/run.py convert \
             --trace_input strace.log \
             --trace_mode strace \
             --sidecar "$SIDECAR" \
@@ -328,11 +329,11 @@ trace() {
 
     echo ""
     echo "=== STEP 6: Validate Event Log ==="
-    python3 src/run.py probe --input "$EVENTS_OUTPUT"
+    $PYTHON src/run.py probe --input "$EVENTS_OUTPUT"
 
     echo ""
     echo "=== STEP 7: Run Membership Inference Attack ==="
-    python3 src/run.py mi \
+    $PYTHON src/run.py mi \
         --input "$EVENTS_OUTPUT" \
         --output_dir "$ATTACK_OUTPUT" \
         --visibility 1.0 \
@@ -360,6 +361,7 @@ trace() {
 
 visibility() {
     cd "$PROJECT_ROOT"
+    ensure_venv
 
     local TRAIN_SIZE=20000
     local HOLDOUT_SIZE=20000
@@ -386,11 +388,11 @@ visibility() {
 
     echo "=== PHASE 1: Generate Event Logs ==="
     for VIS in 1.0 0.5 0.25 0.1; do
-        VIS_INT=$(echo "$VIS * 100" | bc | cut -d. -f1)
+        VIS_INT=$(awk -v v="$VIS" 'BEGIN {printf "%d", v * 100}')
 
         echo ""
         echo "--- Generating events at visibility=$VIS ---"
-        python3 src/run.py partial \
+        $PYTHON src/run.py partial \
             --seed $RANDOM_STATE \
             --train_size $TRAIN_SIZE \
             --holdout_size $HOLDOUT_SIZE \
@@ -409,20 +411,20 @@ visibility() {
     echo ""
     echo "=== PHASE 2: Validate Event Logs ==="
     for VIS in 1.0 0.5 0.25 0.1; do
-        VIS_INT=$(echo "$VIS * 100" | bc | cut -d. -f1)
+        VIS_INT=$(awk -v v="$VIS" 'BEGIN {printf "%d", v * 100}')
         echo ""
         echo "--- Validating observed events at visibility=$VIS ---"
-        python3 src/run.py probe \
+        $PYTHON src/run.py probe \
             --input "$OUTPUT_DIR/events_observed_v${VIS_INT}.csv" || true
     done
 
     echo ""
     echo "=== PHASE 3: Run Attacks on Observed Streams ==="
     for VIS in 1.0 0.5 0.25 0.1; do
-        VIS_INT=$(echo "$VIS * 100" | bc | cut -d. -f1)
+        VIS_INT=$(awk -v v="$VIS" 'BEGIN {printf "%d", v * 100}')
         echo ""
         echo "--- Attacking observed stream at visibility=$VIS ---"
-        python3 src/run.py mi \
+        $PYTHON src/run.py mi \
             --input "$OUTPUT_DIR/events_observed_v${VIS_INT}.csv" \
             --output_dir "$OUTPUT_DIR/attack_v${VIS_INT}" \
             --visibility 1.0 \
@@ -431,7 +433,7 @@ visibility() {
 
     echo ""
     echo "=== PHASE 4: Summary ==="
-    python3 - <<'PYEOF'
+    $PYTHON - <<'PYEOF'
 import json, os
 
 output_dir = "results/visibility_sweep"
@@ -492,8 +494,8 @@ smoke() {
     log "Phase 1/3: Running baseline training ($EPOCHS epochs)..."
     "$PYTHON" src/run.py baseline \
         --epochs "$EPOCHS" \
-        --batch-size "$BATCH_SIZE" \
-        --output-dir "$BASELINE_DIR" \
+        --batch_size "$BATCH_SIZE" \
+        --output_dir "$BASELINE_DIR" \
         || fail "Baseline training failed"
 
     [ -f "$BASELINE_DIR/history.json" ] || fail "Baseline history.json not created"
@@ -501,11 +503,11 @@ smoke() {
     log "Baseline training completed"
 
     log "Phase 2/3: Running ORAM training ($EPOCHS epochs, $NUM_SAMPLES samples)..."
-    "$PYTHON" src/run.py sweep \
+    "$PYTHON" src/run.py oram \
         --epochs "$EPOCHS" \
-        --batch-size "$BATCH_SIZE" \
-        --num-samples "$NUM_SAMPLES" \
-        --output-dir "$ORAM_DIR" \
+        --batch_size "$BATCH_SIZE" \
+        --num_samples "$NUM_SAMPLES" \
+        --output_dir "$ORAM_DIR" \
         || fail "ORAM training failed"
 
     [ -f "$ORAM_DIR/history.json" ] || fail "ORAM history.json not created"
@@ -562,6 +564,7 @@ EOF
 
 attack() {
     cd "$PROJECT_ROOT"
+    ensure_venv
 
     echo "=== Testing Upgraded Membership Inference Attack ==="
     echo ""
@@ -570,7 +573,7 @@ attack() {
     mkdir -p "$OUTPUT_DIR"
 
     echo "Step 1: Generate plaintext event log (small scale)..."
-    python3 src/run.py event \
+    $PYTHON src/run.py event \
         --train_size 1000 \
         --holdout_size 1000 \
         --epochs 3 \
@@ -583,12 +586,12 @@ attack() {
 
     echo ""
     echo "Step 2: Validate plaintext event log..."
-    python3 src/run.py probe \
+    $PYTHON src/run.py probe \
         --input "$OUTPUT_DIR/events_plaintext_test.csv"
 
     echo ""
     echo "Step 3: Generate ORAM event log (small scale)..."
-    python3 src/run.py event \
+    $PYTHON src/run.py event \
         --train_size 1000 \
         --holdout_size 1000 \
         --epochs 3 \
@@ -602,12 +605,12 @@ attack() {
 
     echo ""
     echo "Step 4: Validate ORAM event log..."
-    python3 src/run.py probe \
+    $PYTHON src/run.py probe \
         --input "$OUTPUT_DIR/events_oram_test.csv"
 
     echo ""
     echo "Step 5: Run attack on plaintext log..."
-    python3 src/run.py mi \
+    $PYTHON src/run.py mi \
         --input "$OUTPUT_DIR/events_plaintext_test.csv" \
         --output_dir "$OUTPUT_DIR/attack_plaintext" \
         --visibility 1.0 \
@@ -615,7 +618,7 @@ attack() {
 
     echo ""
     echo "Step 6: Run attack on ORAM log..."
-    python3 src/run.py mi \
+    $PYTHON src/run.py mi \
         --input "$OUTPUT_DIR/events_oram_test.csv" \
         --output_dir "$OUTPUT_DIR/attack_oram" \
         --visibility 1.0 \
@@ -648,7 +651,8 @@ macos() {
     local BATCH_SIZE="${3:-32}"
     local EPOCHS="${4:-1}"
 
-    local VENV_PATH="${PROJECT_ROOT}/venv/bin/activate"
+    ensure_venv
+
     local TRACE_LOG="${OUT_DIR}/trace.log"
     local ORAM_AUDIT_LOG="${OUT_DIR}/oram_audit.log"
     local SIDECAR_PATH="${OUT_DIR}/batch_sidecar.csv"
@@ -660,13 +664,6 @@ macos() {
 
     mkdir -p "${OUT_DIR}"
     rm -f "${TRACE_LOG}" "${ORAM_AUDIT_LOG}" "${SIDECAR_PATH}" "${TRAIN_LOG}" "${EVENTS_CSV}" "${TRACE_VALIDATION_JSON}" "${ATTACK_INPUT_AUDIT_JSON}"
-
-    if [[ ! -f "${VENV_PATH}" ]]; then
-        echo "Missing venv at ${VENV_PATH}"
-        exit 1
-    fi
-
-    source "${VENV_PATH}"
 
     echo "Starting fs_usage tracing (sudo required)..."
     sudo fs_usage -w -f filesys > "${TRACE_LOG}" 2>&1 &
@@ -681,7 +678,7 @@ macos() {
     trap cleanup EXIT
 
     echo "Running real ORAM training..."
-    ORAM_AUDIT_LOG="${ORAM_AUDIT_LOG}" python "${PROJECT_ROOT}/src/run.py" sidecar \
+    ORAM_AUDIT_LOG="${ORAM_AUDIT_LOG}" "$PYTHON" "${PROJECT_ROOT}/src/run.py" sidecar \
         --epochs "${EPOCHS}" \
         --batch_size "${BATCH_SIZE}" \
         --num_samples "${NUM_SAMPLES}" \
@@ -695,7 +692,7 @@ macos() {
     trap - EXIT
 
     echo "Converting fs_usage trace to events CSV..."
-    python "${PROJECT_ROOT}/src/run.py" convert \
+    "$PYTHON" "${PROJECT_ROOT}/src/run.py" convert \
         --trace_input "${TRACE_LOG}" \
         --trace_mode fs_usage \
         --sidecar "${SIDECAR_PATH}" \
@@ -706,7 +703,7 @@ macos() {
         --output "${EVENTS_CSV}"
 
     echo "Running upgraded membership attack on converted trace..."
-    python "${PROJECT_ROOT}/src/run.py" mi \
+    "$PYTHON" "${PROJECT_ROOT}/src/run.py" mi \
         --input "${EVENTS_CSV}" \
         --output_dir "${ATTACK_OUT_DIR}" \
         --visibility 1.0 \
@@ -729,6 +726,7 @@ macos() {
 
 results() {
     cd "$PROJECT_ROOT"
+    ensure_venv
 
     local SKIP_CONFIRM=0
     while [[ $# -gt 0 ]]; do
@@ -776,7 +774,7 @@ results() {
 
     echo ""
     echo "=== PHASE 1: Generate Plaintext Event Log ==="
-    python3 src/run.py event \
+    $PYTHON src/run.py event \
         --train_size $TRAIN_SIZE \
         --holdout_size $HOLDOUT_SIZE \
         --epochs $EPOCHS \
@@ -790,7 +788,7 @@ results() {
 
     echo ""
     echo "=== PHASE 2: Generate ORAM Event Log ==="
-    python3 src/run.py event \
+    $PYTHON src/run.py event \
         --train_size $TRAIN_SIZE \
         --holdout_size $HOLDOUT_SIZE \
         --epochs $EPOCHS \
@@ -807,11 +805,11 @@ results() {
     echo "=== PHASE 3: Run Attacks at Multiple Visibility Levels ==="
 
     for VIS in 1.0 0.5 0.25 0.1; do
-        VIS_INT=$(echo "$VIS * 100" | bc | cut -d. -f1)
+        VIS_INT=$(awk -v v="$VIS" 'BEGIN {printf "%d", v * 100}')
 
         echo ""
         echo "--- Plaintext @ visibility=$VIS ---"
-        python3 src/run.py mi \
+        $PYTHON src/run.py mi \
             --input "$OUTPUT_DIR/events_plaintext.csv" \
             --output_dir "$OUTPUT_DIR/plaintext_v${VIS_INT}" \
             --visibility $VIS \
@@ -819,7 +817,7 @@ results() {
 
         echo ""
         echo "--- ORAM @ visibility=$VIS ---"
-        python3 src/run.py mi \
+        $PYTHON src/run.py mi \
             --input "$OUTPUT_DIR/events_oram.csv" \
             --output_dir "$OUTPUT_DIR/oram_v${VIS_INT}" \
             --visibility $VIS \
@@ -829,7 +827,7 @@ results() {
     echo ""
     echo "=== PHASE 4: Generate Summary Table ==="
 
-    python3 - <<'PYEOF'
+    $PYTHON - <<'PYEOF'
 import json
 import os
 import sys

@@ -11,14 +11,14 @@ and synthetic plaintext/ORAM access-pattern event generators for experiments.
 
 import csv
 import os
-import random
 import time
 import struct
 import tempfile
 import json
-from dataclasses import dataclass
+import warnings
 from typing import Dict, List, Optional, Tuple, Callable
-from collections import defaultdict
+
+warnings.filterwarnings("ignore", message="dtype.*align", module="torchvision")
 
 import numpy as np
 import torch
@@ -26,12 +26,11 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
-import torchvision.models as tv_models
-from torch.utils.data import Dataset, DataLoader, Sampler, Subset
+from torch.utils.data import Dataset, DataLoader, Sampler
 from tqdm import tqdm
 from pyoram.oblivious_storage.tree.path_oram import PathORAM
 
-from profiler import Profiler, track, ProfilerContext
+from profiler import Profiler, ProfilerContext
 
 
 
@@ -49,285 +48,106 @@ DEFAULT_BLOCK_SIZE = 4096
 VALID_BACKENDS = ("file", "ram")
 
 
-# ---------------------------------------------------------------------------
-# Record: sidecar logging, audit parsing, and synthetic event generation
-# ---------------------------------------------------------------------------
-
-
-
-# ---------------------------------------------------------------------------
-# Storage constants
-# ---------------------------------------------------------------------------
-
-CIFAR_IMAGE_SIZE = 32 * 32 * 3  # 3072 bytes
-LABEL_SIZE = 1
-METADATA_SIZE = 4
-MIN_BLOCK_SIZE = METADATA_SIZE + LABEL_SIZE + CIFAR_IMAGE_SIZE  # 3077 bytes
-
-DEFAULT_BLOCK_SIZE = 4096
-
-VALID_BACKENDS = ("file", "ram")
-
-
-# ---------------------------------------------------------------------------
-# Profiler
-# ---------------------------------------------------------------------------
-
-@dataclass
-class TimingStats:
-    total_time: float = 0.0
-    call_count: int = 0
-    min_time: float = float('inf')
-    max_time: float = 0.0
-    samples: List[float] = field(default_factory=list)
-
-    def record(self, duration: float, keep_samples: bool = False):
-        self.total_time += duration
-        self.call_count += 1
-        self.min_time = min(self.min_time, duration)
-        self.max_time = max(self.max_time, duration)
-        if keep_samples:
-            self.samples.append(duration)
-
-    @property
-    def avg_time(self) -> float:
-        return self.total_time / self.call_count if self.call_count > 0 else 0.0
-
-    def to_dict(self) -> dict:
-        return {
-            'total_time': self.total_time,
-            'call_count': self.call_count,
-            'avg_time': self.avg_time,
-            'min_time': self.min_time if self.min_time != float('inf') else 0.0,
-            'max_time': self.max_time,
-        }
-
-
-@dataclass
-class MemoryStats:
-    peak_rss: int = 0
-    peak_vms: int = 0
-    samples: List[Dict[str, int]] = field(default_factory=list)
-
-    def record(self):
-        import psutil
-        process = psutil.Process()
-        mem_info = process.memory_info()
-        self.peak_rss = max(self.peak_rss, mem_info.rss)
-        self.peak_vms = max(self.peak_vms, mem_info.vms)
-        self.samples.append({
-            'rss': mem_info.rss,
-            'vms': mem_info.vms,
-            'timestamp': time.time()
-        })
-
-    def to_dict(self) -> dict:
-        return {
-            'peak_rss_mb': self.peak_rss / (1024 * 1024),
-            'peak_vms_mb': self.peak_vms / (1024 * 1024),
-            'sample_count': len(self.samples),
-        }
-
-
-class Profiler:
-    """
-    Central profiler for tracking ORAM overhead decomposition.
-
-    Categories tracked:
-    - io: ORAM block I/O operations
-    - crypto: Encryption/decryption time
-    - shuffle: Path ORAM shuffling/eviction
-    - compute: Model forward/backward passes
-    - dataload: Total data loading time
-    - batch: Per-batch total time
-    - epoch: Per-epoch total time
-    """
-
-    _instance: Optional['Profiler'] = None
-    _lock = threading.Lock()
-
-    def __init__(self):
-        self.timings: Dict[str, TimingStats] = defaultdict(TimingStats)
-        self.memory = MemoryStats()
-        self.epoch_data: List[Dict] = []
-        self.batch_data: List[Dict] = []
-        self.current_epoch: int = 0
-        self.current_batch: int = 0
-        self._enabled = True
-        self._keep_samples = False
-
-    @classmethod
-    def get_instance(cls) -> 'Profiler':
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        return cls._instance
-
-    @classmethod
-    def reset(cls):
-        with cls._lock:
-            cls._instance = None
-
-    def enable(self):
-        self._enabled = True
-
-    def disable(self):
-        self._enabled = False
-
-    def set_keep_samples(self, keep: bool):
-        self._keep_samples = keep
-
-    @contextmanager
-    def track(self, category: str):
-        """
-        Context manager for tracking time in a category.
-
-        Usage:
-            with profiler.track('io'):
-                # I/O operations here
-        """
-        if not self._enabled:
-            yield
-            return
-
-        start = time.perf_counter()
-        try:
-            yield
-        finally:
-            duration = time.perf_counter() - start
-            self.timings[category].record(duration, self._keep_samples)
-
-    def record_time(self, category: str, duration: float):
-        if self._enabled:
-            self.timings[category].record(duration, self._keep_samples)
-
-    def record_memory(self):
-        if self._enabled:
-            self.memory.record()
-
-    def start_epoch(self, epoch: int):
-        self.current_epoch = epoch
-        self.current_batch = 0
-
-    def end_epoch(self, epoch: int, metrics: Optional[Dict] = None):
-        epoch_record = {
-            'epoch': epoch,
-            'timings': {k: v.to_dict() for k, v in self.timings.items()},
-            'memory': self.memory.to_dict(),
-        }
-        if metrics:
-            epoch_record['metrics'] = metrics
-        self.epoch_data.append(epoch_record)
-
-    def record_batch(self, batch_idx: int, metrics: Optional[Dict] = None):
-        self.current_batch = batch_idx
-        if metrics:
-            self.batch_data.append({
-                'epoch': self.current_epoch,
-                'batch': batch_idx,
-                **metrics
-            })
-
-    def get_summary(self) -> Dict:
-        return {
-            'timings': {k: v.to_dict() for k, v in self.timings.items()},
-            'memory': self.memory.to_dict(),
-            'epochs': len(self.epoch_data),
-            'total_batches': len(self.batch_data),
-        }
-
-    def get_overhead_breakdown(self) -> Dict[str, float]:
-        """
-        Calculate percentage breakdown of overhead by category.
-
-        Returns dict mapping category -> percentage of total time.
-        """
-        total = sum(stats.total_time for stats in self.timings.values())
-        if total == 0:
-            return {}
-
-        return {
-            category: (stats.total_time / total) * 100
-            for category, stats in self.timings.items()
-        }
-
-    def save(self, filepath: str):
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-
-        data = {
-            'summary': self.get_summary(),
-            'overhead_breakdown': self.get_overhead_breakdown(),
-            'epoch_data': self.epoch_data,
-            'batch_data': self.batch_data[-1000:],
-        }
-
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2)
-
-    def print_summary(self):
-        print("\n" + "=" * 60)
-        print("PROFILER SUMMARY")
-        print("=" * 60)
-
-        print("\nTiming Breakdown:")
-        print("-" * 40)
-        breakdown = self.get_overhead_breakdown()
-        for category, pct in sorted(breakdown.items(), key=lambda x: -x[1]):
-            stats = self.timings[category]
-            print(f"  {category:15} {pct:6.2f}%  "
-                  f"(total: {stats.total_time:8.2f}s, "
-                  f"calls: {stats.call_count:6d}, "
-                  f"avg: {stats.avg_time * 1000:8.3f}ms)")
-
-        print("\nMemory Usage:")
-        print("-" * 40)
-        print(f"  Peak RSS: {self.memory.peak_rss / (1024 * 1024):.2f} MB")
-        print(f"  Peak VMS: {self.memory.peak_vms / (1024 * 1024):.2f} MB")
-
-        print("=" * 60 + "\n")
-
-
-class ProfilerContext:
-    """
-    Context manager for scoped profiling with automatic cleanup.
-
-    Usage:
-        with ProfilerContext('experiment_name') as profiler:
-            # Run experiment
-            ...
-        # Profiler automatically saved and summarized
-    """
-
-    def __init__(self, name: str, output_dir: str = 'results',
-                 keep_samples: bool = False):
-        self.name = name
-        self.output_dir = output_dir
-        self.keep_samples = keep_samples
-        self.profiler: Optional[Profiler] = None
-
-    def __enter__(self) -> Profiler:
-        Profiler.reset()
-        self.profiler = Profiler.get_instance()
-        self.profiler.set_keep_samples(self.keep_samples)
-        self.profiler.record_memory()
-        return self.profiler
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.profiler:
-            self.profiler.record_memory()
-            filepath = os.path.join(self.output_dir, f'{self.name}_profile.json')
-            self.profiler.save(filepath)
-            self.profiler.print_summary()
-        return False
+SUPPORTED_MODELS = ["resnet18", "resnet50", "efficientnet_b0"]
 
 
 def get_profiler() -> Profiler:
-    return Profiler.get_instance()
+    return Profiler.instance()
 
 
-def track(category: str):
-    return get_profiler().track(category)
+def resolve_torch_device(device: Optional[str] = None) -> torch.device:
+    if device is not None:
+        return torch.device(device)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def create_model(model_name: str) -> nn.Module:
+    if model_name == "resnet18":
+        model = torchvision.models.resnet18(num_classes=10)
+    elif model_name == "resnet50":
+        model = torchvision.models.resnet50(num_classes=10)
+    elif model_name == "efficientnet_b0":
+        model = torchvision.models.efficientnet_b0(num_classes=10)
+    else:
+        raise ValueError(f"Unsupported model: {model_name}. Choose from {SUPPORTED_MODELS}")
+    return model
+
+
+class IndexedDataset(Dataset):
+    """Wraps a dataset to also return the index alongside (image, label)."""
+
+    def __init__(self, base_dataset):
+        self.base_dataset = base_dataset
+
+    def __len__(self) -> int:
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx: int):
+        image, label = self.base_dataset[idx]
+        return image, label, idx
+
+
+class SidecarLogger:
+    """CSV logger for batch-level sidecar timestamps."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self._file = None
+        self._writer = None
+
+    def __enter__(self):
+        self._file = open(self.path, "w", newline="", encoding="utf-8")
+        self._writer = csv.DictWriter(
+            self._file,
+            fieldnames=["timestamp", "batch_id", "epoch", "phase"],
+        )
+        self._writer.writeheader()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._file is not None:
+            self._file.close()
+        return False
+
+    def _ensure_open(self) -> None:
+        if self._writer is None:
+            raise RuntimeError("SidecarLogger must be used as a context manager")
+
+    def log(self, batch_id: str, epoch: int, phase: str) -> None:
+        self._ensure_open()
+        self._writer.writerow({
+            "timestamp": f"{time.time():.6f}",
+            "batch_id": batch_id,
+            "epoch": epoch,
+            "phase": phase,
+        })
+
+    def log_at(self, timestamp: float, batch_id: str, epoch: int, phase: str) -> None:
+        self._ensure_open()
+        self._writer.writerow({
+            "timestamp": f"{timestamp:.6f}",
+            "batch_id": batch_id,
+            "epoch": epoch,
+            "phase": phase,
+        })
+
+
+def read_oram_audit_counts(audit_log_path: str) -> Dict[str, int]:
+    """Parse ORAM audit log and return read/write counts."""
+    counts: Dict[str, int] = {"read": 0, "write": 0}
+    if not os.path.exists(audit_log_path):
+        return counts
+    with open(audit_log_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if "op=read" in line:
+                counts["read"] += 1
+            elif "op=write" in line:
+                counts["write"] += 1
+    return counts
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +199,15 @@ class ORAMStorage:
                 self._temp_dir = None
             self.storage_path = storage_path
 
-        self._init_oram()
+        self._audit_file = None
+
+        try:
+            self._init_oram()
+        except Exception:
+            if self._temp_dir is not None and os.path.exists(self._temp_dir):
+                import shutil
+                shutil.rmtree(self._temp_dir, ignore_errors=True)
+            raise
 
     def _init_oram(self):
         with self.profiler.track('oram_init'):
@@ -387,7 +215,7 @@ class ORAMStorage:
                 storage_name=self.storage_path,
                 block_size=self.block_size,
                 block_count=self.num_samples,
-                storage_type=self.backend if self.backend != "file" else "file",
+                storage_type=self.backend,
             )
 
     def _audit_io(self, op: str, index: int) -> None:
@@ -395,6 +223,8 @@ class ORAMStorage:
         log_path = os.environ.get("ORAM_AUDIT_LOG")
         if not log_path:
             return
+        if self._audit_file is None:
+            self._audit_file = open(log_path, "a", encoding="utf-8")
         include_index = os.environ.get("ORAM_AUDIT_INCLUDE_INDEX", "0") == "1"
         fields = [
             f"{time.time():.6f}",
@@ -404,9 +234,8 @@ class ORAMStorage:
         ]
         if include_index:
             fields.append(f"index={index}")
-        line = ",".join(fields) + "\n"
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(line)
+        self._audit_file.write(",".join(fields) + "\n")
+        self._audit_file.flush()
 
     def _serialize_sample(self, image: np.ndarray, label: int, index: int) -> bytes:
         """
@@ -453,7 +282,7 @@ class ORAMStorage:
         with self.profiler.track('io'):
             with self.profiler.track('oram_write'):
                 self.oram.write_block(index, block_data)
-                self._audit_io("write", index)
+            self._audit_io("write", index)
 
     def read(self, index: int) -> Tuple[np.ndarray, int]:
         """
@@ -471,44 +300,28 @@ class ORAMStorage:
         with self.profiler.track('io'):
             with self.profiler.track('oram_read'):
                 block_data = self.oram.read_block(index)
-                self._audit_io("read", index)
+            self._audit_io("read", index)
 
         image, label, stored_index = self._deserialize_sample(block_data)
-        assert stored_index == index, f"Index mismatch: {stored_index} != {index}"
+        if stored_index != index:
+            raise RuntimeError(f"Index mismatch: {stored_index} != {index}")
 
         return image, label
 
-    def batch_read(self, indices: list) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Read multiple samples from ORAM.
-
-        Note: Each read is still an independent ORAM access.
-        Future optimization: batch ORAM operations.
-
-        Args:
-            indices: List of sample indices to read
-
-        Returns:
-            Tuple of (images array, labels array)
-        """
-        images = []
-        labels = []
-
-        with self.profiler.track('batch_read'):
-            for idx in indices:
-                image, label = self.read(idx)
-                images.append(image)
-                labels.append(label)
-
-        return np.stack(images), np.array(labels)
-
     def close(self):
+        if self._audit_file is not None:
+            self._audit_file.flush()
+            self._audit_file.close()
+            self._audit_file = None
+
         if hasattr(self, 'oram') and self.oram is not None:
             self.oram.close()
+            self.oram = None
 
         if self._temp_dir is not None and os.path.exists(self._temp_dir):
             import shutil
             shutil.rmtree(self._temp_dir, ignore_errors=True)
+            self._temp_dir = None
 
     def __enter__(self):
         return self
@@ -561,8 +374,8 @@ def load_cifar10_to_oram(
     if limit is not None:
         num_samples = min(num_samples, limit)
 
-    assert num_samples <= oram_storage.num_samples, \
-        f"ORAM storage too small: {oram_storage.num_samples} < {num_samples}"
+    if num_samples > oram_storage.num_samples:
+        raise ValueError(f"ORAM storage too small: {oram_storage.num_samples} < {num_samples}")
 
     iterator = range(num_samples)
     if progress:
@@ -819,45 +632,6 @@ class _MediatedORAMLoader:
         yield from loader
 
 
-def create_standard_dataloader(
-    data_dir: str = './data',
-    batch_size: int = 128,
-    shuffle: bool = True,
-    num_workers: int = 4,
-    train: bool = True
-) -> Tuple[DataLoader, int]:
-    """
-    Create a standard (non-ORAM) CIFAR-10 DataLoader for comparison.
-    """
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.RandomCrop(32, padding=4) if train else transforms.Lambda(lambda x: x),
-        transforms.RandomHorizontalFlip() if train else transforms.Lambda(lambda x: x),
-        transforms.Normalize(
-            mean=[0.4914, 0.4822, 0.4465],
-            std=[0.2023, 0.1994, 0.2010]
-        ),
-    ])
-
-    dataset = torchvision.datasets.CIFAR10(
-        root=data_dir,
-        train=train,
-        download=True,
-        transform=transform
-    )
-
-    dataloader = DataLoader(
-        dataset=dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=train
-    )
-
-    return dataloader, len(dataset)
-
-
 # ---------------------------------------------------------------------------
 # Train
 # ---------------------------------------------------------------------------
@@ -886,6 +660,7 @@ class Train:
         block_size: int = DEFAULT_BLOCK_SIZE,
         model_name: str = "resnet18",
         num_workers: int = 0,
+        seed: Optional[int] = None,
     ):
         self.baseline = baseline
         self.data_dir = data_dir
@@ -897,17 +672,10 @@ class Train:
         self.backend = backend
         self.block_size = block_size
         self.model_name = model_name
-        self.num_workers = num_workers if not baseline else max(num_workers, 4)
+        self.num_workers = max(num_workers, 4) if baseline else num_workers
+        self.seed = seed
 
-        if device is None:
-            if torch.cuda.is_available():
-                self.device = torch.device('cuda')
-            elif torch.backends.mps.is_available():
-                self.device = torch.device('mps')
-            else:
-                self.device = torch.device('cpu')
-        else:
-            self.device = torch.device(device)
+        self.device = resolve_torch_device(device)
 
         self.profiler = get_profiler()
 
@@ -920,7 +688,6 @@ class Train:
         self.train_loader = None
         self.test_loader = None
         self.num_train_samples = num_samples if num_samples is not None else 50000
-        self.num_test_samples = 10000
 
     def setup(self):
         mode = "baseline" if self.baseline else "ORAM"
@@ -978,15 +745,16 @@ class Train:
             block_size=self.block_size,
         )
 
-        limit = self.num_train_samples if self.num_train_samples < 50000 else None
+        limit = self.num_train_samples
         print(f"Loading CIFAR-10 training data into ORAM ({self.num_train_samples} samples)...")
-        load_cifar10_to_oram(
+        actually_loaded = load_cifar10_to_oram(
             self.oram_storage,
             data_dir=self.data_dir,
             train=True,
             progress=True,
             limit=limit
         )
+        self.num_train_samples = actually_loaded
 
         self.train_loader = create_oram_dataloader(
             oram_storage=self.oram_storage,
@@ -994,7 +762,8 @@ class Train:
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
-            train=True
+            train=True,
+            seed=self.seed
         )
 
     def _setup_test_loader(self):
@@ -1054,7 +823,7 @@ class Train:
         for batch_idx, (inputs, targets) in enumerate(pbar):
             batch_start = time.perf_counter()
 
-            with self.profiler.track('dataload'):
+            with self.profiler.track('transfer'):
                 inputs = inputs.to(self.device, non_blocking=True)
                 targets = targets.to(self.device, non_blocking=True)
 
@@ -1086,9 +855,10 @@ class Train:
 
         self.scheduler.step()
 
+        num_batches = max(len(self.train_loader), 1)
         metrics = {
-            'train_loss': running_loss / len(self.train_loader),
-            'train_acc': 100. * correct / total,
+            'train_loss': running_loss / num_batches,
+            'train_acc': 100. * correct / max(total, 1),
             'lr': self.scheduler.get_last_lr()[0]
         }
 
@@ -1118,8 +888,8 @@ class Train:
                 correct += predicted.eq(targets).sum().item()
 
         return {
-            'test_loss': test_loss / len(self.test_loader),
-            'test_acc': 100. * correct / total
+            'test_loss': test_loss / max(len(self.test_loader), 1),
+            'test_acc': 100. * correct / max(total, 1)
         }
 
     def train(
@@ -1163,7 +933,7 @@ class Train:
             if epoch % eval_every == 0 or epoch == num_epochs:
                 test_metrics = self.evaluate()
             else:
-                test_metrics = {'test_loss': 0, 'test_acc': 0}
+                test_metrics = {'test_loss': None, 'test_acc': None}
 
             epoch_time = time.time() - epoch_start
             self.profiler.record_time('epoch', epoch_time)
@@ -1175,12 +945,13 @@ class Train:
             history['test_acc'].append(test_metrics['test_acc'])
             history['lr'].append(train_metrics['lr'])
 
+            test_acc_str = f"{test_metrics['test_acc']:.2f}%" if test_metrics['test_acc'] is not None else "N/A"
             print(f"Epoch {epoch}: train_loss={train_metrics['train_loss']:.4f}, "
                   f"train_acc={train_metrics['train_acc']:.2f}%, "
-                  f"test_acc={test_metrics['test_acc']:.2f}%, "
+                  f"test_acc={test_acc_str}, "
                   f"time={epoch_time:.2f}s")
 
-            if test_metrics['test_acc'] > best_acc:
+            if test_metrics['test_acc'] is not None and test_metrics['test_acc'] > best_acc:
                 best_acc = test_metrics['test_acc']
                 torch.save({
                     'epoch': epoch,
@@ -1194,7 +965,7 @@ class Train:
         history['total_time'] = total_time
         history['best_acc'] = best_acc
 
-        with open(os.path.join(save_dir, 'history.json'), 'w') as f:
+        with open(os.path.join(save_dir, 'history.json'), 'w', encoding='utf-8') as f:
             json.dump(history, f, indent=2)
 
         mode = "Baseline" if self.baseline else "ORAM"
@@ -1231,11 +1002,14 @@ def run_baseline_training(
             device=device,
             model_name=model_name,
         )
-        trainer.setup()
-        history = trainer.train(
-            num_epochs=num_epochs,
-            save_dir=output_dir
-        )
+        try:
+            trainer.setup()
+            history = trainer.train(
+                num_epochs=num_epochs,
+                save_dir=output_dir
+            )
+        finally:
+            trainer.cleanup()
 
     return history
 
@@ -1279,15 +1053,154 @@ def run_oram_training(
 
     return history
 
-# Backward-compatible aliases for run.py imports
-baseline = Train.baseline
-oram = Train.oram
-ORAMDataset = Datasets.ORAM
-IndexedDataset = Datasets.Indexed
-resolve_torch_device = Train.resolve_torch_device
-SUPPORTED_MODELS = Train.Models.SUPPORTED_MODELS
-read_oram_audit_counts = Record.read_oram_audit_counts
-SidecarLogger = Record.Sidecar
-sidecar_training = Record.sidecar_training
-plaintext = Record.plaintext
-oram_event = Record.oram
+def sidecar_training(args) -> Dict:
+    """Run ORAM training with sidecar batch logging."""
+    import random as _random
+    _random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    os.environ["ORAM_AUDIT_LOG"] = os.path.join(args.output_dir, "oram_audit.csv")
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    history = run_oram_training(
+        num_epochs=args.epochs,
+        batch_size=args.batch_size,
+        output_dir=args.output_dir,
+        device=args.device,
+        num_samples=args.num_samples,
+        backend=args.backend,
+        block_size=args.block_size,
+        model_name=args.model,
+        num_workers=args.num_workers,
+    )
+
+    sidecar_path = getattr(args, "sidecar_path", None)
+    if sidecar_path:
+        num_samples = args.num_samples or 50000
+        num_batches = num_samples // args.batch_size
+        total_time = history.get("total_time", num_batches * args.epochs * 0.1)
+        batch_duration = total_time / max(num_batches * args.epochs, 1)
+        training_start = time.time() - total_time
+
+        with SidecarLogger(sidecar_path) as sc:
+            for epoch in range(args.epochs):
+                for batch_idx in range(num_batches):
+                    global_batch = epoch * num_batches + batch_idx
+                    synthetic_ts = training_start + global_batch * batch_duration
+                    sc.log_at(
+                        timestamp=synthetic_ts,
+                        batch_id=f"{epoch}_{batch_idx}_train",
+                        epoch=epoch,
+                        phase="train",
+                    )
+
+    return history
+
+
+def plaintext(
+    train_size: int = 20000,
+    holdout_size: int = 20000,
+    epochs: int = 3,
+    batch_size: int = 128,
+    probe_batch_prob: float = 0.2,
+    probe_mix_ratio: float = 0.3,
+    data_dir: str = "./data",
+    random_state: int = 42,
+) -> List[Tuple[str, float, int, str, int]]:
+    """Generate synthetic plaintext access-pattern event log."""
+    import random as _random
+    _random.seed(random_state)
+    np.random.seed(random_state)
+
+    ds = torchvision.datasets.CIFAR10(root=data_dir, train=True, download=True)
+    n = len(ds)
+    all_idx = list(range(n))
+    _random.shuffle(all_idx)
+
+    train_idx = all_idx[:train_size]
+    holdout_idx = all_idx[train_size:train_size + holdout_size]
+
+    events: List[Tuple[str, float, int, str, int]] = []
+    global_time = 0.0
+
+    for epoch in range(epochs):
+        _random.shuffle(train_idx)
+        for batch_start in range(0, len(train_idx), batch_size):
+            batch = train_idx[batch_start:batch_start + batch_size]
+            batch_id = f"{epoch}_{batch_start // batch_size}_train"
+            for sid in batch:
+                global_time += _random.uniform(0.001, 0.010)
+                events.append((str(sid), global_time, epoch, batch_id, 1))
+
+            if _random.random() < probe_batch_prob:
+                probe_n = max(1, int(batch_size * probe_mix_ratio))
+                probe_samples = _random.sample(holdout_idx, min(probe_n, len(holdout_idx)))
+                probe_batch_id = f"{epoch}_{batch_start // batch_size}_probe"
+                for sid in probe_samples:
+                    global_time += _random.uniform(0.001, 0.010)
+                    events.append((str(sid), global_time, epoch, probe_batch_id, 0))
+
+    return events
+
+
+def oram_event(
+    train_size: int = 20000,
+    holdout_size: int = 20000,
+    epochs: int = 3,
+    batch_size: int = 128,
+    probe_batch_prob: float = 0.2,
+    probe_mix_ratio: float = 0.3,
+    data_dir: str = "./data",
+    random_state: int = 42,
+) -> List[Tuple[str, float, int, str, int]]:
+    """Generate synthetic ORAM access-pattern event log.
+
+    ORAM randomizes physical accesses, so the event log uses opaque
+    block identifiers instead of sample IDs.
+    """
+    import random as _random
+    _random.seed(random_state)
+    np.random.seed(random_state)
+
+    ds = torchvision.datasets.CIFAR10(root=data_dir, train=True, download=True)
+    n = len(ds)
+    all_idx = list(range(n))
+    _random.shuffle(all_idx)
+
+    train_idx = all_idx[:train_size]
+    holdout_idx = all_idx[train_size:train_size + holdout_size]
+
+    membership = {i: 1 for i in train_idx} | {i: 0 for i in holdout_idx}
+
+    events: List[Tuple[str, float, int, str, int]] = []
+    global_time = 0.0
+    block_counter = 0
+
+    for epoch in range(epochs):
+        _random.shuffle(train_idx)
+        for batch_start in range(0, len(train_idx), batch_size):
+            batch = train_idx[batch_start:batch_start + batch_size]
+            batch_id = f"{epoch}_{batch_start // batch_size}_train"
+            for sid in batch:
+                global_time += _random.uniform(0.001, 0.010)
+                block_counter += 1
+                oram_id = f"block_{block_counter}"
+                events.append((oram_id, global_time, epoch, batch_id, membership.get(sid, 1)))
+
+            if _random.random() < probe_batch_prob:
+                probe_n = max(1, int(batch_size * probe_mix_ratio))
+                probe_samples = _random.sample(holdout_idx, min(probe_n, len(holdout_idx)))
+                probe_batch_id = f"{epoch}_{batch_start // batch_size}_probe"
+                for sid in probe_samples:
+                    global_time += _random.uniform(0.001, 0.010)
+                    block_counter += 1
+                    oram_id = f"block_{block_counter}"
+                    events.append((oram_id, global_time, epoch, probe_batch_id, membership.get(sid, 0)))
+
+    return events
+
+
+# Backward-compatible aliases for run.py / pipeline.py imports
+baseline = run_baseline_training
+oram = run_oram_training

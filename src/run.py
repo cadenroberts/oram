@@ -4,7 +4,7 @@ Unified experiment runner for OMLO.
 
 Subcommands:
     Run:        baseline, experiments, inference, oram, phases, sidecar, sweep
-    Generate:   attack, event, partial, reference, plot, privacy, membership, robustness
+    Generate:   attack, event, leakage, partial, reference, plot, privacy, membership, robustness
     Attack:     mi, mi-simple
     Utility:    setup, system, probe, files, train, trace, convert, upgraded
 """
@@ -12,21 +12,27 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import ast
 import bisect
 import csv
+import hashlib
 import json
 import os
 import random
 import re
+import shutil
 import struct
+import subprocess
 import sys
 import time
-from typing import Dict, List, Optional, Tuple
+from collections import deque
+from dataclasses import fields as dataclass_fields, asdict
+from typing import Deque, Dict, List, Optional, Tuple
+
+import pandas as pd
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader, Subset
@@ -34,10 +40,7 @@ from torch.utils.data import Dataset, DataLoader, Subset
 from oram import (
     baseline as train_baseline,
     oram as train_oram,
-    ORAMDataset,
-    SUPPORTED_MODELS,
     resolve_torch_device,
-    read_oram_audit_counts,
     IndexedDataset,
     SidecarLogger,
     sidecar_training,
@@ -45,13 +48,12 @@ from oram import (
     oram_event,
 )
 from attack import Build, upgraded_attack, simple_attack, PartialObservabilityConfig
-from figures import Save, Plot
+from figures import Save, Plot, latex_table, feature_importance_table
 from pipeline import (
     LEAK_PATTERNS,
     RunConfig,
     Trace,
     Sweep,
-    ExperimentPhases,
     PHASES,
     single_configuration,
     write_summary_csv,
@@ -61,9 +63,20 @@ from pipeline import (
 MEMBER_RE = re.compile(r"^member_(\d+)\.bin$")
 NONMEMBER_RE = re.compile(r"^nonmember_(\d+)\.bin$")
 
+GEN_RESULTS_ROOT = "results"
+GEN_OUTPUT_DIR = "results/figures"
+
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
+
+
+def invoke_command(cmd: List[str], description: str) -> None:
+    print(f"\n{description}")
+    print(f"  Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"Command failed (exit {result.returncode}): {' '.join(cmd)}")
 
 
 
@@ -96,7 +109,6 @@ class Datasets:
     class FileSample(Dataset):
         def __init__(self, file_paths: List[str]):
             self.file_paths = sorted(file_paths)
-            self.transform = transforms.Compose([])
 
         def __len__(self) -> int:
             return len(self.file_paths)
@@ -124,7 +136,6 @@ class Datasets:
             self.rng = random.Random(seed)
 
             self.buffer: Deque[Tuple[torch.Tensor, int, int, str]] = deque()
-            self.pending_indices: Deque[int] = deque()
 
             self.length = len(self.real_paths)
 
@@ -135,12 +146,10 @@ class Datasets:
             if self.decoys_per_access <= 0 or not self.decoy_pool_paths:
                 return
 
-            candidates = self.decoy_pool_paths
+            candidates = [p for p in self.decoy_pool_paths if p != true_path] or self.decoy_pool_paths
             chosen = self.rng.sample(candidates, k=min(self.decoys_per_access, len(candidates)))
 
             for path in chosen:
-                if path == true_path and len(candidates) > 1:
-                    continue
                 with open(path, "rb") as f:
                     _ = f.read()
 
@@ -160,13 +169,11 @@ class Datasets:
 
         def _release_one(self, requested_idx: int) -> Tuple[torch.Tensor, int, int, str]:
             window = list(self.buffer)[: min(len(self.buffer), self.release_shuffle_window)]
-
-            req_pos = None
             requested_path = self.real_paths[requested_idx]
-            for i, item in enumerate(window):
-                if item[3] == requested_path:
-                    req_pos = i
-                    break
+            req_pos = next(
+                (i for i, item in enumerate(window) if item[3] == requested_path),
+                None,
+            )
 
             if req_pos is not None and self.rng.random() < 0.5:
                 chosen_pos = req_pos
@@ -178,7 +185,7 @@ class Datasets:
             newbuf = deque()
             removed = False
             for item in self.buffer:
-                if not removed and item == chosen:
+                if not removed and item is chosen:
                     removed = True
                     continue
                 newbuf.append(item)
@@ -212,45 +219,35 @@ def read_probe_samples(probe_paths: List[str], n: int) -> List[Tuple[torch.Tenso
 
 def infer_sample_and_label(path: str) -> Optional[Tuple[str, int]]:
     base = os.path.basename(path)
-    m = MEMBER_RE.search(base)
-    if m:
+    if m := MEMBER_RE.search(base):
         return m.group(1), 1
-    m = NONMEMBER_RE.search(base)
-    if m:
+    if m := NONMEMBER_RE.search(base):
         return m.group(1), 0
     return None
 
 
 def read_sidecar(path: str):
-    markers = []
     with open(path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            markers.append((
-                float(row["timestamp"]),
-                str(row["batch_id"]),
-                int(row["epoch"]),
-                str(row["phase"]),
-            ))
+        markers = [
+            (float(row["timestamp"]), str(row["batch_id"]),
+             int(row["epoch"]), str(row["phase"]))
+            for row in reader
+        ]
     markers.sort(key=lambda x: x[0])
     return markers
 
 
 def nearest_prior_marker(ts: float, marker_times: List[float], markers):
     idx = bisect.bisect_right(marker_times, ts) - 1
-    if idx < 0:
-        return None
-    return markers[idx]
+    return None if idx < 0 else markers[idx]
 
 
 def scan_attack_input_for_leaks(rows: List[Dict[str, object]]) -> Dict[str, object]:
     joined_text = "\n".join(
         f"{row.get('sample_id','')},{row.get('batch_id','')},{row.get('label','')}" for row in rows
     )
-    hits = []
-    for pat in LEAK_PATTERNS:
-        if pat.search(joined_text):
-            hits.append(pat.pattern)
+    hits = [pat.pattern for pat in LEAK_PATTERNS if pat.search(joined_text)]
     label_counts: Dict[str, int] = {}
     for row in rows:
         lbl = str(row["label"])
@@ -294,21 +291,12 @@ def check_import(module: str, description: str) -> bool:
         return False
 
 
-def check_file_exists(path: str, description: str) -> bool:
-    if os.path.exists(path):
-        print(f"[OK] {description}: {path}")
-        return True
-    else:
-        print(f"[MISSING] {description}: {path}")
-        return False
-
 
 def check_executable(path: str) -> bool:
     if os.access(path, os.X_OK):
         return True
-    else:
-        print(f"  [WARN] Not executable: {path}")
-        return False
+    print(f"  [WARN] Not executable: {path}")
+    return False
 
 
 def validate_event(input_path: str) -> bool:
@@ -334,7 +322,7 @@ def validate_event(input_path: str) -> bool:
     unique_members = member_events["sample_id"].nunique()
     unique_nonmembers = nonmember_events["sample_id"].nunique()
 
-    print(f"\n=== EVENT STATISTICS ===")
+    print("\n=== EVENT STATISTICS ===")
     print(f"Total events: {len(df)}")
     print(f"Member events: {len(member_events)} ({unique_members} unique samples)")
     print(f"Non-member events: {len(nonmember_events)} ({unique_nonmembers} unique samples)")
@@ -344,10 +332,10 @@ def validate_event(input_path: str) -> bool:
         return False
     print("Non-members appear in event log (non-trivial scenario)")
 
-    member_access_rate = len(member_events) / unique_members
-    nonmember_access_rate = len(nonmember_events) / unique_nonmembers
+    member_access_rate = len(member_events) / max(unique_members, 1)
+    nonmember_access_rate = len(nonmember_events) / max(unique_nonmembers, 1)
 
-    print(f"\n=== ACCESS RATES ===")
+    print("\n=== ACCESS RATES ===")
     print(f"Member access rate: {member_access_rate:.2f} per sample")
     print(f"Non-member access rate: {nonmember_access_rate:.2f} per sample")
     print(f"Ratio: {member_access_rate / nonmember_access_rate:.1f}:1")
@@ -362,25 +350,23 @@ def validate_event(input_path: str) -> bool:
     member_counts = member_events.groupby("sample_id").size()
     nonmember_counts = nonmember_events.groupby("sample_id").size()
 
-    print(f"\n=== ACCESS COUNT DISTRIBUTION ===")
-    print(f"Members:")
-    print(f"  Mean: {member_counts.mean():.2f}")
-    print(f"  Std: {member_counts.std():.2f}")
-    print(f"  Min: {member_counts.min()}")
-    print(f"  Max: {member_counts.max()}")
-    print(f"  Median: {member_counts.median():.2f}")
+    def _print_count_stats(label, counts):
+        print(f"{label}:")
+        print(f"  Mean: {counts.mean():.2f}")
+        print(f"  Std: {counts.std():.2f}")
+        print(f"  Min: {counts.min()}")
+        print(f"  Max: {counts.max()}")
+        print(f"  Median: {counts.median():.2f}")
 
-    print(f"\nNon-members:")
-    print(f"  Mean: {nonmember_counts.mean():.2f}")
-    print(f"  Std: {nonmember_counts.std():.2f}")
-    print(f"  Min: {nonmember_counts.min()}")
-    print(f"  Max: {nonmember_counts.max()}")
-    print(f"  Median: {nonmember_counts.median():.2f}")
+    print("\n=== ACCESS COUNT DISTRIBUTION ===")
+    _print_count_stats("Members", member_counts)
+    print()
+    _print_count_stats("Non-members", nonmember_counts)
 
     member_epoch_coverage = member_events.groupby("sample_id")["epoch"].nunique().mean()
     nonmember_epoch_coverage = nonmember_events.groupby("sample_id")["epoch"].nunique().mean()
 
-    print(f"\n=== EPOCH COVERAGE ===")
+    print("\n=== EPOCH COVERAGE ===")
     print(f"Members: {member_epoch_coverage:.2f} unique epochs per sample")
     print(f"Non-members: {nonmember_epoch_coverage:.2f} unique epochs per sample")
 
@@ -392,7 +378,7 @@ def validate_event(input_path: str) -> bool:
     probe_batches = df[df["batch_id"].str.contains("probe", na=False)]
     train_batches = df[df["batch_id"].str.contains("train", na=False)]
 
-    print(f"\n=== BATCH TYPE DISTRIBUTION ===")
+    print("\n=== BATCH TYPE DISTRIBUTION ===")
     print(f"Training batch events: {len(train_batches)}")
     print(f"Probe batch events: {len(probe_batches)}")
     print(f"Probe batch fraction: {len(probe_batches) / len(df):.2%}")
@@ -410,7 +396,7 @@ def validate_event(input_path: str) -> bool:
     else:
         print("Probe batches contain non-members")
 
-    print(f"\n=== VALIDATION SUMMARY ===")
+    print("\n=== VALIDATION SUMMARY ===")
 
     all_checks_passed = True
 
@@ -478,11 +464,11 @@ def experiments(args):
             )
         )
 
-    if not args.skip_obfuscatedcated and (only_defense in (None, "obfuscatedcated")):
+    if not args.skip_obfuscated and (only_defense in (None, "obfuscated")):
         configs.append(
             RunConfig(
-                name="obfuscatedcated",
-                defense="obfuscatedcated",
+                name="obfuscated",
+                defense="obfuscated",
                 visibility=1.0,
                 dataset_root=args.dataset_root,
                 epochs=args.epochs,
@@ -558,7 +544,7 @@ def experiments(args):
         json.dump(assertions, f, indent=2)
 
     summary_path = os.path.join(args.output_root, "summary.csv")
-    print(f"\n=== COMPLETE ===")
+    print("\n=== COMPLETE ===")
     print(f"Summary: {summary_path}")
     print(f"Total runs: {len(all_rows)}")
     print("")
@@ -619,38 +605,25 @@ def inference_main(args):
     results_plaintext: Dict[float, Dict[str, float]] = {}
     results_oram: Dict[float, Dict[str, float]] = {}
 
+    def _extract_best(s):
+        bm = s["best_model"]
+        r = s["results"][bm]
+        return {"auc": r["auc"], "accuracy": r["accuracy"], "ap": r["average_precision"], "model": bm}
+
     for vis in visibility_levels:
         pt_out = os.path.join(args.output_dir, f"plaintext_v{int(vis*100)}")
         print(f"\nSTEP 3.{int(vis*100)}: Attack plaintext log at visibility={vis}")
-        summary = upgraded_attack(
-            input_path=plaintext_log,
-            output_dir=pt_out,
-            visibility=vis,
-            random_state=args.random_state,
-        )
-        best_model = summary["best_model"]
-        results_plaintext[vis] = {
-            "auc": summary["results"][best_model]["auc"],
-            "accuracy": summary["results"][best_model]["accuracy"],
-            "ap": summary["results"][best_model]["average_precision"],
-            "model": best_model,
-        }
+        results_plaintext[vis] = _extract_best(upgraded_attack(
+            input_path=plaintext_log, output_dir=pt_out,
+            visibility=vis, random_state=args.random_state,
+        ))
 
         oram_out = os.path.join(args.output_dir, f"oram_v{int(vis*100)}")
         print(f"\nSTEP 4.{int(vis*100)}: Attack ORAM log at visibility={vis}")
-        summary = upgraded_attack(
-            input_path=oram_log,
-            output_dir=oram_out,
-            visibility=vis,
-            random_state=args.random_state,
-        )
-        best_model = summary["best_model"]
-        results_oram[vis] = {
-            "auc": summary["results"][best_model]["auc"],
-            "accuracy": summary["results"][best_model]["accuracy"],
-            "ap": summary["results"][best_model]["average_precision"],
-            "model": best_model,
-        }
+        results_oram[vis] = _extract_best(upgraded_attack(
+            input_path=oram_log, output_dir=oram_out,
+            visibility=vis, random_state=args.random_state,
+        ))
 
     print(f"\n{'='*60}")
     print("STEP 5: Generate summary table")
@@ -675,25 +648,21 @@ def inference_main(args):
     print(summary_df.to_string(index=False))
     print(f"\nSaved summary to: {summary_path}")
 
+    def _write_results_table(f, heading, vis_levels, results_dict):
+        f.write(f"## {heading}\n\n")
+        f.write("| Visibility | AUC | Accuracy |\n")
+        f.write("|------------|-----|----------|\n")
+        for vis in vis_levels:
+            if vis in results_dict:
+                r = results_dict[vis]
+                f.write(f"| {vis:.2f} | {r['auc']:.4f} | {r['accuracy']:.4f} |\n")
+
     markdown_path = os.path.join(args.output_dir, "summary.txt")
-    with open(markdown_path, "w") as f:
+    with open(markdown_path, "w", encoding="utf-8") as f:
         f.write("# Membership Inference Attack Results\n\n")
-        f.write("## Plaintext Access Patterns\n\n")
-        f.write("| Visibility | AUC | Accuracy |\n")
-        f.write("|------------|-----|----------|\n")
-        for vis in visibility_levels:
-            if vis in results_plaintext:
-                r = results_plaintext[vis]
-                f.write(f"| {vis:.2f} | {r['auc']:.4f} | {r['accuracy']:.4f} |\n")
-        
-        f.write("\n## ORAM-Backed Access Patterns\n\n")
-        f.write("| Visibility | AUC | Accuracy |\n")
-        f.write("|------------|-----|----------|\n")
-        for vis in visibility_levels:
-            if vis in results_oram:
-                r = results_oram[vis]
-                f.write(f"| {vis:.2f} | {r['auc']:.4f} | {r['accuracy']:.4f} |\n")
-        
+        _write_results_table(f, "Plaintext Access Patterns", visibility_levels, results_plaintext)
+        f.write("\n")
+        _write_results_table(f, "ORAM-Backed Access Patterns", visibility_levels, results_oram)
         f.write("\n## Interpretation\n\n")
         f.write("- **Plaintext**: Access patterns expose structured temporal and frequency information.\n")
         f.write("- **ORAM**: Physical accesses are randomized and unlinkable to logical samples, ")
@@ -754,7 +723,25 @@ def phases_main(args):
 
 
 def sidecar_main(args):
-    return sidecar_training(args)
+    sidecar_training(args)
+    return 0
+
+
+def _validation_result(all_ok: bool, fail: str, ok: str, steps: List[str]) -> int:
+    if not all_ok:
+        print(fail)
+        return 1
+    print(ok)
+    for s in steps:
+        print(f"  {s}")
+    return 0
+
+
+def _check_core_layout() -> bool:
+    ok = True
+    ok &= check_file("src/run.py", "Unified runner")
+    ok &= check_file("src/oram.py", "ORAM module")
+    return ok
 
 
 def setup(args):
@@ -763,8 +750,7 @@ def setup(args):
     all_ok = True
 
     print("Core Files:")
-    all_ok &= check_file("src/run.py", "Unified runner")
-    all_ok &= check_file("src/oram.py", "ORAM module")
+    all_ok &= _check_core_layout()
 
     print("\nOrchestration:")
     all_ok &= check_file("run.sh", "Shell orchestrator")
@@ -783,17 +769,11 @@ def setup(args):
         print("    Note: XGBoost is optional but recommended for best performance")
 
     print("\n" + "="*60)
-    if all_ok:
-        print("All required components are in place.")
-        print("\nNext steps:")
-        print("  1. Install missing dependencies: pip install -r requirements.txt")
-        print("  2. Run quick test: bash run.sh smoke")
-        return 0
-    else:
-        print("Some components are missing.")
-        print("\nTo install dependencies:")
-        print("  pip install -r requirements.txt")
-        return 1
+    return _validation_result(all_ok,
+        fail="Some components are missing.\n\nTo install dependencies:\n  pip install -r requirements.txt",
+        ok="All required components are in place.",
+        steps=["1. Install missing dependencies: pip install -r requirements.txt",
+               "2. Run quick test: bash run.sh smoke"])
 
 
 def system(args):
@@ -802,27 +782,30 @@ def system(args):
     all_ok = True
 
     print("1. Core Files")
-    all_ok &= check_file_exists("src/run.py", "Unified runner")
-    all_ok &= check_file_exists("src/oram.py", "ORAM module")
+    all_ok &= _check_core_layout()
 
     print("\n2. Orchestration")
-    exists = check_file_exists("run.sh", "Shell orchestrator")
+    exists = check_file("run.sh", "Shell orchestrator")
     if exists:
         check_executable("run.sh")
     all_ok &= exists
 
     print("\n3. Documentation")
-    all_ok &= check_file_exists("README.md", "README")
+    all_ok &= check_file("README.md", "README")
 
     print("\n4. Python Syntax Validation")
     python_files = [
         "src/run.py",
         "src/oram.py",
+        "src/attack.py",
+        "src/figures.py",
+        "src/pipeline.py",
+        "src/profiler.py",
     ]
 
     for pyfile in python_files:
         try:
-            with open(pyfile, "r") as f:
+            with open(pyfile, "r", encoding="utf-8") as f:
                 ast.parse(f.read())
             print(f"[OK] Syntax valid: {pyfile}")
         except SyntaxError as e:
@@ -840,6 +823,10 @@ def system(args):
         "matplotlib",
         "sklearn",
         "tqdm",
+        "pandas",
+        "pyoram",
+        "cryptography",
+        "psutil",
     ]
 
     for pkg in required_packages:
@@ -863,44 +850,37 @@ def system(args):
 
     if sys.platform.startswith("linux"):
         try:
-            import bcc  # noqa: F401
+            import bcc  # noqa: F401  # pyright: ignore[reportMissingImports]
             print("[OK] BCC available (eBPF tracing supported)")
         except ImportError:
             print("[WARN] BCC NOT available (will use strace fallback)")
             print("  Install: sudo apt install bpfcc-tools python3-bpfcc")
 
-        result = subprocess.run(["which", "strace"], capture_output=True)
-        if result.returncode == 0:
+        if shutil.which("strace"):
             print("[OK] strace available (fallback tracing supported)")
         else:
             print("[MISSING] strace NOT available (install via package manager)")
+    elif sys.platform == "darwin":
+        print("[INFO] Platform: macOS (use 'run.sh macos' for fs_usage-based tracing)")
     else:
-        print(f"[WARN] Platform: {sys.platform} (OS-level tracing requires Linux)")
+        print(f"[WARN] Platform: {sys.platform} (OS-level tracing requires Linux or macOS)")
 
     print("\n=== VALIDATION SUMMARY ===\n")
 
-    if all_ok:
-        print("PASS: All critical components present and valid")
-        print("\nNext steps:")
-        print("  1. Quick test: bash run.sh smoke")
-        print("  2. Workshop paper: bash run.sh visibility")
-        print("  3. Conference paper: bash run.sh trace (Linux)")
-        return 0
-    else:
-        print("FAIL: Some components missing or invalid")
-        print("\nFix issues above and re-run validation.")
-        return 1
+    return _validation_result(all_ok,
+        fail="FAIL: Some components missing or invalid\n\nFix issues above and re-run validation.",
+        ok="PASS: All critical components present and valid",
+        steps=["1. Quick test: bash run.sh smoke",
+               "2. Workshop paper: bash run.sh visibility",
+               "3. Conference paper: bash run.sh trace (Linux)"])
 
 
 def probe(args):
-    success = validate_event(args.input)
-
-    if success:
+    if validate_event(args.input):
         print("\nEvent log is suitable for non-trivial membership inference attack.")
         return 0
-    else:
-        print("\nEvent log validation failed.")
-        return 1
+    print("\nEvent log validation failed.")
+    return 1
 
 
 def files(args):
@@ -982,8 +962,8 @@ def train(args):
     if not probe_paths:
         raise RuntimeError("No probe files found.")
 
-    if args.obfuscatedcated:
-        train_ds = ObfuscatedFileDataset(
+    if args.obfuscated:
+        train_ds = Datasets.ObfuscatedFile(
             real_paths=train_paths,
             decoy_pool_paths=train_paths + probe_paths,
             decoys_per_access=args.decoys,
@@ -992,7 +972,7 @@ def train(args):
             seed=args.seed,
         )
     else:
-        train_ds = FileSampleDataset(train_paths)
+        train_ds = Datasets.FileSample(train_paths)
 
     train_loader = DataLoader(
         train_ds,
@@ -1063,7 +1043,7 @@ def convert(args):
             )
         else:
             raise RuntimeError("ORAM conversion requires --trace_mode strace or fs_usage.")
-        trace_rows = [(ts, token) for ts, token in trace_rows_oram]
+        trace_rows = list(trace_rows_oram)
         trace_validation.update(oram_validation)
     else:
         if args.trace_mode == "ebpf_csv":
@@ -1243,25 +1223,25 @@ Quick Start:
 
 def gen_attack(args) -> None:
     """Generate LaTeX tables from membership inference attack results."""
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    if dirname := os.path.dirname(args.output):
+        os.makedirs(dirname, exist_ok=True)
 
     main_table = latex_table(args.results_dir, args.visibility_levels)
 
-    with open(args.output, "w") as f:
+    with open(args.output, "w", encoding="utf-8") as f:
         f.write(main_table)
         f.write("\n\n")
 
         if args.include_features:
             f.write("% Feature importance tables\n\n")
             for mode in ["plaintext", "oram"]:
-                feature_table = feature_importance_table(
+                if table := feature_importance_table(
                     args.results_dir,
                     mode,
                     visibility=1.0,
                     top_k=10
-                )
-                if feature_table:
-                    f.write(feature_table)
+                ):
+                    f.write(table)
                     f.write("\n\n")
 
     print(f"LaTeX table saved to: {args.output}")
@@ -1300,28 +1280,28 @@ def event(args) -> None:
             probe_mix_ratio=args.probe_mix_ratio,
             data_dir=args.data_dir,
             random_state=args.random_state,
-            backend=args.backend,
         )
 
     Save.events_csv(events, args.output)
 
-    member_events = sum(1 for _, _, _, _, label in events if label == 1)
-    nonmember_events = sum(1 for _, _, _, _, label in events if label == 0)
-    unique_members = len(set(sid for sid, _, _, _, label in events if label == 1))
-    unique_nonmembers = len(set(sid for sid, _, _, _, label in events if label == 0))
+    member_events = sum(label == 1 for _, _, _, _, label in events)
+    nonmember_events = sum(label == 0 for _, _, _, _, label in events)
+    unique_members = len({sid for sid, _, _, _, label in events if label == 1})
+    unique_nonmembers = len({sid for sid, _, _, _, label in events if label == 0})
 
-    print(f"\n=== EVENT LOG SUMMARY ===")
+    print("\n=== EVENT LOG SUMMARY ===")
     print(f"Total events: {len(events)}")
     print(f"Member events: {member_events} ({unique_members} unique samples)")
     print(f"Non-member events: {nonmember_events} ({unique_nonmembers} unique samples)")
-    print(f"Member access rate: {member_events / unique_members:.2f} per sample")
-    print(f"Non-member access rate: {nonmember_events / unique_nonmembers:.2f} per sample")
+    print(f"Member access rate: {member_events / max(unique_members, 1):.2f} per sample")
+    print(f"Non-member access rate: {nonmember_events / max(unique_nonmembers, 1):.2f} per sample")
     print(f"Saved to: {args.output}")
 
 
 def partial(args) -> None:
     """Generate event log with partial observability simulation."""
-    cfg = PartialObservabilityConfig(**vars(args))
+    valid_keys = {f.name for f in dataclass_fields(PartialObservabilityConfig)}
+    cfg = PartialObservabilityConfig(**{k: v for k, v in vars(args).items() if k in valid_keys})
 
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -1400,18 +1380,18 @@ def partial(args) -> None:
     Save.csv(cfg.full_output, full_events)
     Save.csv(cfg.observed_output, observed_events)
 
-    full_member = sum(1 for e in full_events if e["label"] == 1)
-    full_nonmember = sum(1 for e in full_events if e["label"] == 0)
-    obs_member = sum(1 for e in observed_events if e["label"] == 1)
-    obs_nonmember = sum(1 for e in observed_events if e["label"] == 0)
+    full_member = sum(e["label"] == 1 for e in full_events)
+    full_nonmember = sum(e["label"] == 0 for e in full_events)
+    obs_member = sum(e["label"] == 1 for e in observed_events)
+    obs_nonmember = sum(e["label"] == 0 for e in observed_events)
 
-    print(f"\n=== FULL STREAM ===")
+    print("\n=== FULL STREAM ===")
     print(f"Total events: {len(full_events)}")
     print(f"Member events: {full_member}")
     print(f"Non-member events: {full_nonmember}")
     print(f"Saved to: {cfg.full_output}")
 
-    print(f"\n=== OBSERVED STREAM ===")
+    print("\n=== OBSERVED STREAM ===")
     print(f"Total events: {len(observed_events)}")
     print(f"Member events: {obs_member}")
     print(f"Non-member events: {obs_nonmember}")
@@ -1435,7 +1415,7 @@ def reference(args) -> None:
     EPOCHS = 3
     PROBE_BATCH_PROB = 0.2
     PROBE_MIX_RATIO = 0.3
-    OUTPUT_FILE = "events.csv"
+    OUTPUT_FILE = args.output
 
     random.seed(SEED)
     np.random.seed(SEED)
@@ -1498,7 +1478,7 @@ def reference(args) -> None:
                 log_event(int(idx), epoch, f"{epoch}_{batch_id}_train")
 
             if random.random() < PROBE_BATCH_PROB:
-                probe_size = int(BATCH_SIZE * PROBE_MIX_RATIO)
+                probe_size = max(1, int(BATCH_SIZE * PROBE_MIX_RATIO))
                 holdout_samples = random.sample(holdout_indices, probe_size)
 
                 for sample_id in holdout_samples:
@@ -1513,25 +1493,26 @@ def reference(args) -> None:
     print("Done.")
 
     print(f"Saving to {OUTPUT_FILE}...")
+    ensure_dir(os.path.dirname(OUTPUT_FILE) or ".")
 
-    with open(OUTPUT_FILE, "w", newline="") as f:
+    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=[
             "sample_id", "timestamp", "epoch", "batch_id", "label"
         ])
         writer.writeheader()
         writer.writerows(events)
 
-    member_events = sum(1 for e in events if e["label"] == 1)
-    nonmember_events = sum(1 for e in events if e["label"] == 0)
-    unique_members = len(set(e["sample_id"] for e in events if e["label"] == 1))
-    unique_nonmembers = len(set(e["sample_id"] for e in events if e["label"] == 0))
+    member_events = sum(e["label"] == 1 for e in events)
+    nonmember_events = sum(e["label"] == 0 for e in events)
+    unique_members = len({e["sample_id"] for e in events if e["label"] == 1})
+    unique_nonmembers = len({e["sample_id"] for e in events if e["label"] == 0})
 
-    print(f"\n=== EVENT LOG SUMMARY ===")
+    print("\n=== EVENT LOG SUMMARY ===")
     print(f"Total events: {len(events)}")
     print(f"Member events: {member_events} ({unique_members} unique samples)")
     print(f"Non-member events: {nonmember_events} ({unique_nonmembers} unique samples)")
-    print(f"Member access rate: {member_events / unique_members:.2f} per sample")
-    print(f"Non-member access rate: {nonmember_events / unique_nonmembers:.2f} per sample")
+    print(f"Member access rate: {member_events / max(unique_members, 1):.2f} per sample")
+    print(f"Non-member access rate: {nonmember_events / max(unique_nonmembers, 1):.2f} per sample")
     print(f"Saved to: {OUTPUT_FILE}")
 
     print("\n=== EXPECTED SIGNAL ===")
@@ -1553,12 +1534,59 @@ def privacy(args) -> None:
 
 
 def membership(args) -> None:
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    if dirname := os.path.dirname(args.output):
+        os.makedirs(dirname, exist_ok=True)
     Plot.membership(args.results_dir, args.output)
 
 
 def robustness(args) -> None:
     Plot.robustness(args.summary, args.oram_results, args.output)
+
+
+def leakage_main(args) -> None:
+    """Generate plaintext vs ORAM access frequency logs for leakage comparison."""
+    from collections import Counter
+    random.seed(42)
+    output_dir = args.output_dir
+    os.makedirs(output_dir, exist_ok=True)
+
+    num_samples = args.num_samples
+    batch_size = args.batch_size
+    epochs = args.epochs
+
+    indices = list(range(num_samples))
+    pt_counter: Counter = Counter()
+    for _epoch in range(epochs):
+        random.shuffle(indices)
+        for start in range(0, num_samples, batch_size):
+            batch = indices[start:start + batch_size]
+            for idx in batch:
+                pt_counter[idx] += 1
+
+    pt_counts = {str(k): v for k, v in pt_counter.items()}
+
+    oram_counter: Counter = Counter()
+    block_id = 0
+    for _epoch in range(epochs):
+        random.shuffle(indices)
+        for start in range(0, num_samples, batch_size):
+            batch = indices[start:start + batch_size]
+            for _idx in batch:
+                block_id += 1
+                oram_counter[f"block_{block_id}"] += 1
+
+    oram_counts = {str(k): v for k, v in oram_counter.items()}
+
+    pt_path = os.path.join(output_dir, "plaintext_access_log.json")
+    with open(pt_path, "w", encoding="utf-8") as f:
+        json.dump({"counts": pt_counts}, f, indent=2)
+
+    or_path = os.path.join(output_dir, "oram_access_log.json")
+    with open(or_path, "w", encoding="utf-8") as f:
+        json.dump({"counts": oram_counts}, f, indent=2)
+
+    print(f"Plaintext access log: {pt_path} ({len(pt_counts)} samples)")
+    print(f"ORAM access log: {or_path} ({len(oram_counts)} blocks)")
 
 
 def mi(args) -> None:
@@ -1603,8 +1631,8 @@ def main():
 
     baseline_parser = subparsers.add_parser('baseline', help='Run baseline training')
     baseline_parser.add_argument('--epochs', type=int, default=100)
-    baseline_parser.add_argument('--batch-size', type=int, default=128)
-    baseline_parser.add_argument('--output-dir', type=str, default='results/baseline')
+    baseline_parser.add_argument('--batch_size', type=int, default=128)
+    baseline_parser.add_argument('--output_dir', type=str, default='results/baseline')
     baseline_parser.add_argument('--device', type=str, default=None)
     baseline_parser.add_argument('--model', type=str, default='resnet18',
                                 choices=['resnet18', 'resnet50', 'efficientnet_b0'])
@@ -1621,10 +1649,10 @@ def main():
     experiments_parser.add_argument("--prefetch_size", type=int, default=8)
     experiments_parser.add_argument("--release_shuffle_window", type=int, default=4)
     experiments_parser.add_argument("--skip_plaintext", action="store_true")
-    experiments_parser.add_argument("--skip_obfuscatedcated", action="store_true")
+    experiments_parser.add_argument("--skip_obfuscated", action="store_true")
     experiments_parser.add_argument("--skip_oram", action="store_true")
     experiments_parser.add_argument("--defense", type=str, default="all",
-                                   choices=["all", "plaintext", "obfuscatedcated", "oram"])
+                                   choices=["all", "plaintext", "obfuscated", "oram"])
     experiments_parser.add_argument("--oram_backend", type=str, default="file", choices=["file", "ram"])
     experiments_parser.add_argument("--oram_block_size", type=int, default=4096)
 
@@ -1642,15 +1670,15 @@ def main():
 
     oram_parser = subparsers.add_parser('oram', help='Run ORAM training')
     oram_parser.add_argument('--epochs', type=int, default=100)
-    oram_parser.add_argument('--batch-size', type=int, default=128)
-    oram_parser.add_argument('--output-dir', type=str, default='results/oram')
+    oram_parser.add_argument('--batch_size', type=int, default=128)
+    oram_parser.add_argument('--output_dir', type=str, default='results/oram')
     oram_parser.add_argument('--device', type=str, default=None)
-    oram_parser.add_argument('--num-samples', type=int, default=None)
+    oram_parser.add_argument('--num_samples', type=int, default=None)
     oram_parser.add_argument('--backend', type=str, default='file', choices=['file', 'ram'])
-    oram_parser.add_argument('--block-size', type=int, default=4096)
+    oram_parser.add_argument('--block_size', type=int, default=4096)
     oram_parser.add_argument('--model', type=str, default='resnet18',
                             choices=['resnet18', 'resnet50', 'efficientnet_b0'])
-    oram_parser.add_argument('--num-workers', type=int, default=0)
+    oram_parser.add_argument('--num_workers', type=int, default=0)
 
     phases_parser = subparsers.add_parser('phases', help='Run phased experiments')
     phases_parser.add_argument("--phase", type=str, default="all")
@@ -1666,7 +1694,8 @@ def main():
     sidecar_parser.add_argument("--num_samples", type=int, default=None)
     sidecar_parser.add_argument("--backend", type=str, default="file", choices=["file", "ram"])
     sidecar_parser.add_argument("--block_size", type=int, default=4096)
-    sidecar_parser.add_argument("--model", type=str, default="resnet18")
+    sidecar_parser.add_argument("--model", type=str, default="resnet18",
+                                choices=["resnet18", "resnet50", "efficientnet_b0"])
     sidecar_parser.add_argument("--num_workers", type=int, default=0)
     sidecar_parser.add_argument("--output_dir", type=str, default="results/oram_trace")
 
@@ -1674,7 +1703,7 @@ def main():
     sweep_parser.add_argument("--sweep", type=str, choices=["batch_size", "dataset_size", "block_size", "all"],
                              default="all")
     sweep_parser.add_argument("--epochs", type=int, default=3)
-    sweep_parser.add_argument("--output-dir", type=str, default="results")
+    sweep_parser.add_argument("--output_dir", type=str, default="results")
     sweep_parser.add_argument("--device", type=str, default=None)
 
     # --- Test / utility subcommands ---
@@ -1700,7 +1729,7 @@ def main():
     train_parser.add_argument("--probe_mix_ratio", type=float, default=0.30)
     train_parser.add_argument("--sidecar_path", type=str, default="batch_sidecar.csv")
     train_parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "mps", "cuda"])
-    train_parser.add_argument("--obfuscatedcated", action="store_true")
+    train_parser.add_argument("--obfuscated", action="store_true")
     train_parser.add_argument("--decoys", type=int, default=2)
     train_parser.add_argument("--prefetch", type=int, default=8)
     train_parser.add_argument("--shuffle_window", type=int, default=4)
@@ -1714,12 +1743,18 @@ def main():
     convert_parser.add_argument("--trace_mode", choices=["ebpf_csv", "strace", "fs_usage"], required=True)
     convert_parser.add_argument("--sidecar", required=True)
     convert_parser.add_argument("--output", default="events_trace.csv")
-    convert_parser.add_argument("--defense", choices=["plaintext", "obfuscatedcated", "oram"], required=True)
+    convert_parser.add_argument("--defense", choices=["plaintext", "obfuscated", "oram"], required=True)
     convert_parser.add_argument("--oram_block_size", type=int, default=4096)
     convert_parser.add_argument("--trace_validation_out", type=str, default=None)
     convert_parser.add_argument("--attack_input_audit_out", type=str, default=None)
 
     subparsers.add_parser('upgraded', help='Interactive demo')
+
+    leakage_parser = subparsers.add_parser('leakage', help='Generate access pattern leakage logs')
+    leakage_parser.add_argument("--num_samples", type=int, default=5000)
+    leakage_parser.add_argument("--batch_size", type=int, default=128)
+    leakage_parser.add_argument("--epochs", type=int, default=3)
+    leakage_parser.add_argument("--output_dir", type=str, default="results/phase7")
 
     # --- Generate subcommands ---
 
@@ -1764,10 +1799,12 @@ def main():
     partial_parser.add_argument("--full_output", type=str, default="events_full.csv")
     partial_parser.add_argument("--observed_output", type=str, default="events_observed.csv")
 
-    subparsers.add_parser("reference", help="Run reference implementation")
+    reference_parser = subparsers.add_parser("reference", help="Run reference implementation")
+    reference_parser.add_argument("--output", type=str, default="results/events.csv",
+                                  help="Output CSV path for reference events.")
 
     plot_parser = subparsers.add_parser("plot", help="Generate all figures from phase results")
-    plot_parser.add_argument("--results-root", type=str, default=GEN_RESULTS_ROOT)
+    plot_parser.add_argument("--results_root", type=str, default=GEN_RESULTS_ROOT)
     plot_parser.add_argument("--output", type=str, default=GEN_OUTPUT_DIR)
 
     privacy_parser = subparsers.add_parser("privacy", help="Privacy-performance tradeoff plot")
@@ -1825,6 +1862,7 @@ def main():
         'trace': Trace.cmd,
         'convert': convert,
         'upgraded': upgraded,
+        'leakage': leakage_main,
         'attack': gen_attack,
         'event': event,
         'partial': partial,

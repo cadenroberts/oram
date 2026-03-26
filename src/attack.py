@@ -9,24 +9,31 @@ Includes upgraded_attack (full MI pipeline) and simple_attack (frequency-based).
 """
 
 import csv
-import json
 import os
 import random
+from collections import Counter, defaultdict
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Dict, List, Optional, Tuple
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+import torchvision
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader, Subset
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
+    classification_report,
     precision_recall_curve,
     roc_auc_score,
     roc_curve,
@@ -35,6 +42,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
 from figures import Save, Plot
+from oram import IndexedDataset
 
 try:
     from xgboost import XGBClassifier
@@ -46,6 +54,11 @@ except Exception:
 ATTACK_REQUIRED_COLUMNS = {"sample_id", "timestamp", "epoch", "batch_id", "label"}
 
 
+def ensure_dir(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
+
+
+@dataclass
 class PartialObservabilityConfig:
     seed: int = 42
     train_size: int = 20000
@@ -151,7 +164,7 @@ class Build:
 
     @staticmethod
     def feature_table(df: pd.DataFrame) -> pd.DataFrame:
-        epoch_sizes, epoch_time_spans = compute_epoch_batch_normalizers(df)
+        epoch_sizes, epoch_time_spans, epoch_start_times = compute_epoch_batch_normalizers(df)
         cooc_stats = compute_batch_cooccurrence_scores(df)
 
         global_t_min = float(df["timestamp"].min())
@@ -189,7 +202,7 @@ class Build:
             for epoch, eg in g.groupby("epoch"):
                 esize = float(epoch_sizes[int(epoch)])
                 e_times = eg["timestamp"].to_numpy(dtype=float)
-                e_start = float(df[df["epoch"] == int(epoch)]["timestamp"].min())
+                e_start = epoch_start_times[int(epoch)]
                 span = epoch_time_spans[int(epoch)]
 
                 norm_epoch_freqs.append(len(eg) / esize)
@@ -202,7 +215,7 @@ class Build:
 
             epoch_switches = float(np.sum(np.diff(epochs) != 0)) if len(epochs) > 1 else 0.0
 
-            row: Dict[str, float] = {
+            row: Dict[str, object] = {
                 "sample_id": sample_id,
                 "label": label,
                 "count_total": count_total,
@@ -367,7 +380,6 @@ def simple_attack(
     holdout_indices = indices[train_size:train_size + holdout_size]
 
     train_dataset = Subset(IndexedDataset(full_dataset), train_indices)
-    holdout_dataset = Subset(IndexedDataset(full_dataset), holdout_indices)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
@@ -411,16 +423,20 @@ def simple_attack(
     X = np.array(X)
     y_true = np.array(y_true)
 
+    X_train_atk, X_test_atk, y_train_atk, y_test_atk = train_test_split(
+        X, y_true, test_size=0.3, random_state=seed, stratify=y_true
+    )
+
     print("Training attack model...")
 
     clf = LogisticRegression()
-    clf.fit(X, y_true)
+    clf.fit(X_train_atk, y_train_atk)
 
-    preds = clf.predict(X)
-    probs = clf.predict_proba(X)[:, 1]
+    preds = clf.predict(X_test_atk)
+    probs = clf.predict_proba(X_test_atk)[:, 1]
 
-    acc = accuracy_score(y_true, preds)
-    auc = roc_auc_score(y_true, probs)
+    acc = accuracy_score(y_test_atk, preds)
+    auc = roc_auc_score(y_test_atk, probs)
 
     print("\n=== MEMBERSHIP INFERENCE RESULTS ===")
     print(f"Accuracy: {acc:.4f}")
@@ -439,11 +455,11 @@ def simple_attack(
     plt.legend()
     plt.title("Access Count Distribution")
     plt.tight_layout()
-    plt.savefig(f"{output_dir}/figures/membership_auc.png", dpi=150, bbox_inches="tight")
+    plt.savefig(f"{output_dir}/figures/access_count_distribution.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"Saved figure: {output_dir}/figures/membership_auc.png")
+    print(f"Saved figure: {output_dir}/figures/access_count_distribution.png")
 
-    with open(f"{output_dir}/membership_results.txt", "w") as f:
+    with open(f"{output_dir}/membership_results.txt", "w", encoding="utf-8") as f:
         f.write(f"Accuracy: {acc:.4f}\n")
         f.write(f"AUC: {auc:.4f}\n")
     print(f"Saved results: {output_dir}/membership_results.txt")
@@ -501,15 +517,18 @@ def maybe_limit_samples(df: pd.DataFrame, max_samples: Optional[int], random_sta
 
 
 
-def compute_epoch_batch_normalizers(df: pd.DataFrame) -> Tuple[Dict[int, int], Dict[int, float]]:
+def compute_epoch_batch_normalizers(df: pd.DataFrame) -> Tuple[Dict[int, int], Dict[int, float], Dict[int, float]]:
     epoch_sizes: Dict[int, int] = df.groupby("epoch").size().to_dict()
     epoch_time_spans: Dict[int, float] = {}
+    epoch_start_times: Dict[int, float] = {}
 
     for epoch, g in df.groupby("epoch"):
-        span = float(g["timestamp"].max() - g["timestamp"].min())
-        epoch_time_spans[int(epoch)] = max(span, 1e-9)
+        t_min = float(g["timestamp"].min())
+        t_max = float(g["timestamp"].max())
+        epoch_time_spans[int(epoch)] = max(t_max - t_min, 1e-9)
+        epoch_start_times[int(epoch)] = t_min
 
-    return epoch_sizes, epoch_time_spans
+    return epoch_sizes, epoch_time_spans, epoch_start_times
 
 
 

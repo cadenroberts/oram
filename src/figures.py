@@ -11,14 +11,13 @@ Also includes reporting helpers for LaTeX tables and summaries.
 import csv
 import json
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 
 class Save:
@@ -26,7 +25,9 @@ class Save:
 
     @staticmethod
     def events_csv(events: List[Tuple[str, float, int, str, int]], output_path: str) -> None:
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        dirname = os.path.dirname(output_path)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
 
         with open(output_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -36,6 +37,9 @@ class Save:
 
     @staticmethod
     def csv(path: str, rows: List[Dict[str, object]]) -> None:
+        dirname = os.path.dirname(path)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
@@ -48,9 +52,11 @@ class Save:
     def dict_csv(rows, path: str) -> None:
         if not rows:
             return
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        dirname = os.path.dirname(path)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
         keys = list(rows[0].keys())
-        with open(path, "w", newline="") as f:
+        with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=keys)
             w.writeheader()
             w.writerows(rows)
@@ -88,7 +94,7 @@ class Figure:
             return
 
         df = pd.DataFrame(data)
-        _fig, ax = plt.subplots(figsize=(7, 5))
+        _, ax = plt.subplots(figsize=(7, 5))
         colors = ["steelblue", "coral", "mediumseagreen"][:len(df)]
         bars = ax.bar(df["config"], df["epoch_time"], color=colors)
         for bar, val in zip(bars, df["epoch_time"]):
@@ -118,7 +124,7 @@ class Figure:
             return
 
         df = pd.DataFrame(data).sort_values("num_workers")
-        _fig, ax = plt.subplots(figsize=(7, 5))
+        _, ax = plt.subplots(figsize=(7, 5))
         ax.plot(df["num_workers"], df["epoch_time"], "o-", linewidth=2, color="coral")
         for _, row in df.iterrows():
             ax.annotate(f'{row["epoch_time"]:.1f}s',
@@ -150,7 +156,7 @@ class Figure:
             return
 
         df = pd.DataFrame(data).sort_values("block_size")
-        _fig, ax = plt.subplots(figsize=(7, 5))
+        _, ax = plt.subplots(figsize=(7, 5))
         ax.plot(df["block_size"] / 1024, df["epoch_time"], "s-", linewidth=2, color="coral")
         for _, row in df.iterrows():
             ax.annotate(f'{row["epoch_time"]:.1f}s',
@@ -187,7 +193,7 @@ class Figure:
             return
 
         df = pd.DataFrame(data)
-        _fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+        _, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
 
         x = np.arange(len(df))
         w = 0.35
@@ -229,7 +235,7 @@ class Figure:
             return
 
         df = pd.DataFrame(data).sort_values("N")
-        _fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+        _, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
 
         ax1.plot(df["N"], df["epoch_time"], "o-", linewidth=2, color="coral")
         ax1.set_xlabel("Dataset Size (N)")
@@ -276,7 +282,7 @@ class Figure:
             print("  batch_size: no data")
             return
 
-        _fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+        _, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
 
         if bl_data:
             bl = pd.DataFrame(bl_data).sort_values("batch_size")
@@ -325,15 +331,15 @@ class Figure:
             print("  leakage: no data")
             return
 
-        with open(pt_path) as f:
+        with open(pt_path, encoding="utf-8") as f:
             pt = json.load(f)
-        with open(or_path) as f:
+        with open(or_path, encoding="utf-8") as f:
             oram = json.load(f)
 
         pt_counts = pt.get("counts", {})
         oram_counts = oram.get("counts", {})
 
-        _fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+        _, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
 
         ax = axes[0]
         freqs = sorted(pt_counts.values(), reverse=True)
@@ -395,15 +401,15 @@ class Plot:
         rows = summary(summary_path)
 
         plaintext_row = None
-        obfuscatedcated_row = None
+        obfuscated_row = None
         oram_row = None
 
         for row in rows:
             if float(row["visibility"]) == 1.0:
                 if row["defense"] == "plaintext" and plaintext_row is None:
                     plaintext_row = row
-                elif row["defense"] == "obfuscatedcated" and obfuscatedcated_row is None:
-                    obfuscatedcated_row = row
+                elif row["defense"] == "obfuscated" and obfuscated_row is None:
+                    obfuscated_row = row
                 elif row["defense"] == "oram" and oram_row is None:
                     oram_row = row
 
@@ -417,11 +423,11 @@ class Plot:
             ("Plaintext", 1.0, plaintext_auc, 'o', 'red'),
         ]
 
-        if obfuscatedcated_row:
-            obf_runtime = float(obfuscatedcated_row["train_runtime_sec"])
+        if obfuscated_row:
+            obf_runtime = float(obfuscated_row["train_runtime_sec"])
             obf_overhead = obf_runtime / plaintext_runtime
-            obf_auc = float(obfuscatedcated_row["best_auc"])
-            points.append(("Prefetch obfuscatedcation", obf_overhead, obf_auc, 's', 'orange'))
+            obf_auc = float(obfuscated_row["best_auc"])
+            points.append(("Prefetch Obfuscation", obf_overhead, obf_auc, 's', 'orange'))
 
         if oram_row:
             oram_runtime = float(oram_row["train_runtime_sec"])
@@ -472,7 +478,6 @@ class Plot:
         fig = plt.figure(figsize=(14, 10))
 
         pt_features = feature_table(results_dir, "plaintext", 1.0)
-        oram_features = feature_table(results_dir, "oram", 1.0)
 
         if pt_features.empty:
             print("No plaintext feature table found. Run attack first.")
@@ -527,7 +532,7 @@ class Plot:
 
         metrics_path = os.path.join(results_dir, "plaintext_v100", "metrics.json")
         if os.path.exists(metrics_path):
-            with open(metrics_path) as f:
+            with open(metrics_path, encoding="utf-8") as f:
                 data = json.load(f)
                 best_model = data["best_model"]
                 pt_auc = data["results"][best_model]["auc"]
@@ -536,7 +541,7 @@ class Plot:
 
         metrics_path = os.path.join(results_dir, "oram_v100", "metrics.json")
         if os.path.exists(metrics_path):
-            with open(metrics_path) as f:
+            with open(metrics_path, encoding="utf-8") as f:
                 data = json.load(f)
                 best_model = data["best_model"]
                 oram_auc = data["results"][best_model]["auc"]
@@ -577,7 +582,7 @@ class Plot:
 
             metrics_path = os.path.join(results_dir, f"plaintext_v{vis_int}", "metrics.json")
             if os.path.exists(metrics_path):
-                with open(metrics_path) as f:
+                with open(metrics_path, encoding="utf-8") as f:
                     data = json.load(f)
                     best_model = data["best_model"]
                     pt_aucs.append(data["results"][best_model]["auc"])
@@ -586,18 +591,20 @@ class Plot:
 
             metrics_path = os.path.join(results_dir, f"oram_v{vis_int}", "metrics.json")
             if os.path.exists(metrics_path):
-                with open(metrics_path) as f:
+                with open(metrics_path, encoding="utf-8") as f:
                     data = json.load(f)
                     best_model = data["best_model"]
                     oram_aucs.append(data["results"][best_model]["auc"])
             else:
                 oram_aucs.append(None)
 
-        if any(pt_aucs):
-            ax4.plot([v*100 for v in visibility_levels], pt_aucs, "o-",
+        pt_valid = [(v * 100, a) for v, a in zip(visibility_levels, pt_aucs) if a is not None]
+        oram_valid = [(v * 100, a) for v, a in zip(visibility_levels, oram_aucs) if a is not None]
+        if pt_valid:
+            ax4.plot([p[0] for p in pt_valid], [p[1] for p in pt_valid], "o-",
                     linewidth=2, color="coral", label="Plaintext")
-        if any(oram_aucs):
-            ax4.plot([v*100 for v in visibility_levels], oram_aucs, "s-",
+        if oram_valid:
+            ax4.plot([p[0] for p in oram_valid], [p[1] for p in oram_valid], "s-",
                     linewidth=2, color="steelblue", label="ORAM")
 
         ax4.axhline(0.5, ls="--", color="gray", label="Random")
@@ -622,7 +629,7 @@ class Plot:
         rows = summary(summary_path)
 
         plaintext_data = {}
-        obfuscatedcated_data = {}
+        obfuscated_data = {}
         oram_data = {}
 
         for row in rows:
@@ -632,12 +639,12 @@ class Plot:
 
             if defense == "plaintext":
                 plaintext_data[visibility] = auc
-            elif defense == "obfuscatedcated":
-                obfuscatedcated_data[visibility] = auc
+            elif defense == "obfuscated":
+                obfuscated_data[visibility] = auc
             elif defense == "oram":
                 oram_data[visibility] = auc
 
-        visibilities = sorted(set(plaintext_data.keys()) | set(obfuscatedcated_data.keys()) | set(oram_data.keys()))
+        visibilities = sorted(set(plaintext_data.keys()) | set(obfuscated_data.keys()) | set(oram_data.keys()))
 
         fig, ax = plt.subplots(figsize=(8, 6))
 
@@ -646,10 +653,10 @@ class Plot:
             auc_plain = [plaintext_data[v] for v in vis_plain]
             ax.plot([v * 100 for v in vis_plain], auc_plain, 'o-', linewidth=2, markersize=8, label="Plaintext")
 
-        if obfuscatedcated_data:
-            vis_obf = sorted(obfuscatedcated_data.keys())
-            auc_obf = [obfuscatedcated_data[v] for v in vis_obf]
-            ax.plot([v * 100 for v in vis_obf], auc_obf, 's-', linewidth=2, markersize=8, label="Prefetch obfuscatedcation")
+        if obfuscated_data:
+            vis_obf = sorted(obfuscated_data.keys())
+            auc_obf = [obfuscated_data[v] for v in vis_obf]
+            ax.plot([v * 100 for v in vis_obf], auc_obf, 's-', linewidth=2, markersize=8, label="Prefetch Obfuscation")
 
         if oram_data:
             vis_oram = sorted(oram_data.keys())
@@ -661,7 +668,7 @@ class Plot:
                 vis_str = str(vis).replace(".", "p")
                 metrics_path = os.path.join(oram_results_dir, f"attack_v{vis_str}", "metrics.json")
                 if os.path.exists(metrics_path):
-                    with open(metrics_path, "r") as f:
+                    with open(metrics_path, "r", encoding="utf-8") as f:
                         metrics = json.load(f)
                         best = metrics["best_model"]
                         oram_auc_values.append((vis, metrics["results"][best]["auc"]))
@@ -735,155 +742,6 @@ class Plot:
         plt.close()
 
 
-
-
-# Helper functions
-
-    def feature_table(df: pd.DataFrame) -> pd.DataFrame:
-        epoch_sizes, epoch_time_spans = compute_epoch_batch_normalizers(df)
-        cooc_stats = compute_batch_cooccurrence_scores(df)
-
-        global_t_min = float(df["timestamp"].min())
-        global_t_max = float(df["timestamp"].max())
-        global_span = max(global_t_max - global_t_min, 1e-9)
-
-        rows: List[Dict[str, float]] = []
-
-        for sample_id, g in df.groupby("sample_id"):
-            g = g.sort_values("timestamp")
-            label_vals = g["label"].unique()
-            if len(label_vals) != 1:
-                raise ValueError(f"Sample {sample_id} has inconsistent labels: {label_vals}")
-            label = int(label_vals[0])
-
-            timestamps = g["timestamp"].to_numpy(dtype=float)
-            epochs = g["epoch"].to_numpy(dtype=int)
-            batches = g["batch_id"].astype(str).to_numpy()
-
-            count_total = float(len(g))
-            unique_epochs = float(len(np.unique(epochs)))
-            unique_batches = float(len(np.unique(batches)))
-
-            inter = np.diff(timestamps) if len(timestamps) > 1 else np.array([], dtype=float)
-
-            epoch_counts_series = g.groupby("epoch").size()
-            epoch_counts = epoch_counts_series.to_numpy(dtype=float)
-            epoch_count_map = epoch_counts_series.to_dict()
-
-            norm_epoch_freqs = []
-            first_pos_in_epoch = []
-            mean_pos_in_epoch = []
-            last_pos_in_epoch = []
-
-            for epoch, eg in g.groupby("epoch"):
-                esize = float(epoch_sizes[int(epoch)])
-                e_times = eg["timestamp"].to_numpy(dtype=float)
-                e_start = float(df[df["epoch"] == int(epoch)]["timestamp"].min())
-                span = epoch_time_spans[int(epoch)]
-
-                norm_epoch_freqs.append(len(eg) / esize)
-                rel_positions = (e_times - e_start) / span
-                first_pos_in_epoch.append(float(np.min(rel_positions)))
-                mean_pos_in_epoch.append(float(np.mean(rel_positions)))
-                last_pos_in_epoch.append(float(np.max(rel_positions)))
-
-            rel_global_positions = (timestamps - global_t_min) / global_span
-
-            epoch_switches = float(np.sum(np.diff(epochs) != 0)) if len(epochs) > 1 else 0.0
-
-            row: Dict[str, float] = {
-                "sample_id": sample_id,
-                "label": label,
-                "count_total": count_total,
-                "count_log1p": float(np.log1p(count_total)),
-                "unique_epochs": unique_epochs,
-                "unique_batches": unique_batches,
-                "count_per_unique_epoch": float(count_total / max(unique_epochs, 1.0)),
-                "count_per_unique_batch": float(count_total / max(unique_batches, 1.0)),
-                "epoch_switches": epoch_switches,
-                "epoch_switch_rate": float(epoch_switches / max(count_total - 1.0, 1.0)),
-                "interarrival_cv": coefficient_of_variation(inter),
-                "interarrival_burstiness": attack_burstiness(inter),
-                "global_pos_first": float(np.min(rel_global_positions)) if len(rel_global_positions) else 0.0,
-                "global_pos_mean": float(np.mean(rel_global_positions)) if len(rel_global_positions) else 0.0,
-                "global_pos_last": float(np.max(rel_global_positions)) if len(rel_global_positions) else 0.0,
-                "active_epoch_fraction": float(unique_epochs / max(len(epoch_sizes), 1)),
-            }
-
-            row.update(safe_stats(inter, "interarrival"))
-            row.update(safe_stats(epoch_counts, "epochcount"))
-            row.update(safe_stats(np.array(norm_epoch_freqs, dtype=float), "normepochfreq"))
-            row.update(safe_stats(np.array(first_pos_in_epoch, dtype=float), "epochfirstpos"))
-            row.update(safe_stats(np.array(mean_pos_in_epoch, dtype=float), "epochmeanpos"))
-            row.update(safe_stats(np.array(last_pos_in_epoch, dtype=float), "epochlastpos"))
-            row.update(cooc_stats.get(sample_id, {}))
-
-            for e in sorted(epoch_sizes.keys())[:10]:
-                row[f"epoch_{e}_count"] = float(epoch_count_map.get(e, 0))
-
-            rows.append(row)
-
-        feature_df = pd.DataFrame(rows).sort_values("sample_id").reset_index(drop=True)
-        return feature_df
-
-    @staticmethod
-    def attack_models(random_state: int) -> Dict[str, Pipeline]:
-        models: Dict[str, Pipeline] = {
-            "random_forest": Pipeline(
-                steps=[
-                    ("imputer", SimpleImputer(strategy="constant", fill_value=0.0)),
-                    (
-                        "clf",
-                        RandomForestClassifier(
-                            n_estimators=400,
-                            max_depth=None,
-                            min_samples_leaf=2,
-                            class_weight="balanced",
-                            random_state=random_state,
-                            n_jobs=-1,
-                        ),
-                    ),
-                ]
-            ),
-            "gradient_boosting": Pipeline(
-                steps=[
-                    ("imputer", SimpleImputer(strategy="constant", fill_value=0.0)),
-                    (
-                        "clf",
-                        GradientBoostingClassifier(
-                            random_state=random_state,
-                        ),
-                    ),
-                ]
-            ),
-        }
-
-        if HAS_XGBOOST:
-            models["xgboost"] = Pipeline(
-                steps=[
-                    ("imputer", SimpleImputer(strategy="constant", fill_value=0.0)),
-                    (
-                        "clf",
-                        XGBClassifier(
-                            n_estimators=400,
-                            max_depth=5,
-                            learning_rate=0.05,
-                            subsample=0.9,
-                            colsample_bytree=0.9,
-                            reg_lambda=1.0,
-                            objective="binary:logistic",
-                            eval_metric="logloss",
-                            random_state=random_state,
-                            n_jobs=4,
-                        ),
-                    ),
-                ]
-            )
-
-        return models
-
-
-
 def attack_metrics(results_dir: str, mode: str, visibility: float) -> Dict[str, float]:
     """Load metrics.json for a given mode and visibility level."""
     vis_int = int(visibility * 100)
@@ -892,7 +750,7 @@ def attack_metrics(results_dir: str, mode: str, visibility: float) -> Dict[str, 
     if not os.path.exists(metrics_path):
         return {}
 
-    with open(metrics_path) as f:
+    with open(metrics_path, encoding="utf-8") as f:
         data = json.load(f)
         best_model = data["best_model"]
         res = data["results"][best_model]
@@ -960,7 +818,7 @@ def feature_importance_table(
     if not os.path.exists(metrics_path):
         return ""
 
-    with open(metrics_path) as f:
+    with open(metrics_path, encoding="utf-8") as f:
         data = json.load(f)
         best_model = data["best_model"]
 
@@ -1004,29 +862,12 @@ def feature_importance_table(
 
 
 
-def _csv(path):
-    if not os.path.exists(path):
-        return pd.DataFrame()
-    return pd.read_csv(path)
-
-
-
 def _history(directory):
     p = os.path.join(directory, "history.json")
     if not os.path.exists(p):
         return {}
-    with open(p) as f:
+    with open(p, encoding="utf-8") as f:
         return json.load(f)
-
-
-
-def _profile(directory):
-    for fname in os.listdir(directory):
-        if fname.endswith("_profile.json"):
-            with open(os.path.join(directory, fname)) as f:
-                return json.load(f)
-    return {}
-
 
 
 def _epoch_time(hist):
@@ -1038,7 +879,9 @@ def _epoch_time(hist):
 
 
 def _ensure(path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
 
 
 
@@ -1066,7 +909,7 @@ def phase_summary(root, out):
 
     path = os.path.join(out, "summary.txt")
     _ensure(path)
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     print(f"  Saved: {path}")
 

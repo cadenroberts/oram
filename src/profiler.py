@@ -50,13 +50,16 @@ class Profiler:
             return self.total_time / self.call_count if self.call_count > 0 else 0.0
 
         def to_dict(self) -> dict:
-            return {
+            d = {
                 'total_time': self.total_time,
                 'call_count': self.call_count,
                 'avg_time': self.avg_time,
                 'min_time': self.min_time if self.min_time != float('inf') else 0.0,
                 'max_time': self.max_time,
             }
+            if self.samples:
+                d['samples'] = self.samples
+            return d
 
     @dataclass
     class Memory:
@@ -65,7 +68,10 @@ class Profiler:
         samples: List[Dict[str, int]] = field(default_factory=list)
 
         def record(self):
-            import psutil
+            try:
+                import psutil
+            except ImportError:
+                return
             process = psutil.Process()
             mem_info = process.memory_info()
             self.peak_rss = max(self.peak_rss, mem_info.rss)
@@ -136,11 +142,13 @@ class Profiler:
             yield
         finally:
             duration = time.perf_counter() - start
-            prof.timings[category].record(duration, prof._keep_samples)
+            with cls._lock:
+                prof.timings[category].record(duration, prof._keep_samples)
 
     def record_time(self, category: str, duration: float):
         if self._enabled:
-            self.timings[category].record(duration, self._keep_samples)
+            with Profiler._lock:
+                self.timings[category].record(duration, self._keep_samples)
 
     def record_memory(self):
         if self._enabled:
@@ -151,6 +159,7 @@ class Profiler:
         self.current_batch = 0
 
     def end_epoch(self, epoch: int, metrics: Optional[Dict] = None):
+        # NOTE: timings are cumulative across all epochs, not per-epoch deltas.
         epoch_record = {
             'epoch': epoch,
             'timings': {k: v.to_dict() for k, v in self.timings.items()},
@@ -193,7 +202,9 @@ class Profiler:
         }
 
     def save(self, filepath: str):
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        dirname = os.path.dirname(filepath)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
 
         data = {
             'summary': self.summary(),
@@ -202,7 +213,7 @@ class Profiler:
             'batch_data': self.batch_data[-1000:],
         }
 
-        with open(filepath, 'w') as f:
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
 
     def print_summary(self):
@@ -229,8 +240,8 @@ class Profiler:
 
     class Context:
         """
-        Scoped profiling context: subclasses Profiler and registers itself as the
-        active singleton for the duration of the ``with`` block.
+        Scoped profiling context that creates a fresh Profiler instance and
+        registers it as the active singleton for the duration of the ``with`` block.
 
         Usage:
             with Profiler.Context('experiment_name') as profiler:
@@ -247,9 +258,9 @@ class Profiler:
             self._profiler_instance = None
 
         def __enter__(self) -> 'Profiler':
-            Profiler.reset()
-            self._profiler_instance = Profiler()
             with Profiler._lock:
+                Profiler._instance = None
+                self._profiler_instance = Profiler()
                 Profiler._instance = self._profiler_instance
             self._profiler_instance.set_keep_samples(self.keep_samples)
             self._profiler_instance.record_memory()
