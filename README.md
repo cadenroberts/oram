@@ -28,8 +28,10 @@ flowchart TB
     Oram -->|reads| CIFAR
     Pipeline -->|training| Oram
     Pipeline -->|attack| Attack
+    Pipeline -->|persistence| Figures
     Attack -->|plots| Figures
     TestCore -->|validates| Oram
+    TestCore -->|validates| Figures
     TestCore -->|validates| Attack
     TestCore -->|validates| Profiler
     TestCore -->|validates| Pipeline
