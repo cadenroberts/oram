@@ -17,7 +17,7 @@ import struct
 import tempfile
 import json
 import warnings
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Any, Dict, List, Optional, Tuple, Callable, Union
 
 warnings.filterwarnings("ignore", message="dtype.*align", module="torchvision")
 
@@ -97,8 +97,8 @@ class SidecarLogger:
 
     def __init__(self, path: str):
         self.path = path
-        self._file = None
-        self._writer = None
+        self._file: Any = None
+        self._writer: Any = None
 
     def __enter__(self):
         self._file = open(self.path, "w", newline="", encoding="utf-8")
@@ -200,7 +200,7 @@ class ORAMStorage:
                 self._temp_dir = None
             self.storage_path = storage_path
 
-        self._audit_file = None
+        self._audit_file: Any = None
 
         try:
             self._init_oram()
@@ -418,20 +418,16 @@ class ORAMDataset(Dataset):
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, int]:
         with self.profiler.track('dataload'):
-            image, label = self.oram_storage.read(index)
+            image_np, label = self.oram_storage.read(index)
+            tensor = torch.from_numpy(image_np.copy()).permute(2, 0, 1).float() / 255.0
 
             if self.transform is not None:
-                image = torch.from_numpy(image.copy())
-                image = image.permute(2, 0, 1).float() / 255.0
-                image = self.transform(image)
-            else:
-                image = torch.from_numpy(image.copy())
-                image = image.permute(2, 0, 1).float() / 255.0
+                tensor = self.transform(tensor)
 
             if self.target_transform is not None:
                 label = self.target_transform(label)
 
-        return image, label
+        return tensor, label
 
 
 class PrefetchedDataset(Dataset):
@@ -478,7 +474,7 @@ class ObliviousBatchSampler(Sampler):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
-        self.rng = np.random.RandomState(seed)
+        self.rng = np.random.default_rng(seed)
         self.profiler = get_profiler()
 
     def __iter__(self):
@@ -530,7 +526,7 @@ def create_oram_dataloader(
     num_workers: int = 0,
     train: bool = True,
     seed: Optional[int] = None
-) -> DataLoader:
+) -> Union[DataLoader, '_MediatedORAMLoader']:
     """
     Create a DataLoader backed by ORAM storage.
 
@@ -598,7 +594,7 @@ class _MediatedORAMLoader:
         self.num_workers = num_workers
         self.train = train
         self.transform = transform
-        self.rng = np.random.RandomState(seed)
+        self.rng = np.random.default_rng(seed)
         self.profiler = get_profiler()
 
     def __len__(self) -> int:
@@ -679,12 +675,12 @@ class Train:
 
         self.profiler = get_profiler()
 
-        self.model = None
-        self.optimizer = None
-        self.scheduler = None
-        self.criterion = None
+        self.model: Optional[nn.Module] = None
+        self.optimizer: Optional[optim.Optimizer] = None
+        self.scheduler: Optional[optim.lr_scheduler.MultiStepLR] = None
+        self.criterion: Optional[nn.Module] = None
 
-        self.oram_storage = None
+        self.oram_storage: Optional[ORAMStorage] = None
         self.train_loader = None
         self.test_loader = None
         self.num_train_samples = num_samples if num_samples is not None else 50000
@@ -810,7 +806,10 @@ class Train:
 
         self.criterion = nn.CrossEntropyLoss()
 
-    def train_epoch(self, epoch: int) -> Dict[str, float]:
+    def train_epoch(self, epoch: int) -> Dict[str, Any]:
+        assert self.model is not None and self.optimizer is not None
+        assert self.scheduler is not None and self.criterion is not None
+        assert self.train_loader is not None
         self.model.train()
 
         running_loss = 0.0
@@ -867,7 +866,9 @@ class Train:
 
         return metrics
 
-    def evaluate(self) -> Dict[str, float]:
+    def evaluate(self) -> Dict[str, Optional[float]]:
+        assert self.model is not None and self.criterion is not None
+        assert self.test_loader is not None
         self.model.eval()
 
         test_loss = 0.0
@@ -911,7 +912,7 @@ class Train:
         """
         os.makedirs(save_dir, exist_ok=True)
 
-        history = {
+        history: Dict = {
             'epochs': [],
             'train_loss': [],
             'train_acc': [],
@@ -930,6 +931,7 @@ class Train:
 
             train_metrics = self.train_epoch(epoch)
 
+            test_metrics: Dict[str, Optional[float]]
             if epoch % eval_every == 0 or epoch == num_epochs:
                 test_metrics = self.evaluate()
             else:
@@ -953,6 +955,7 @@ class Train:
 
             if test_metrics['test_acc'] is not None and test_metrics['test_acc'] > best_acc:
                 best_acc = test_metrics['test_acc']
+                assert self.model is not None and self.optimizer is not None
                 torch.save({
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),

@@ -1,10 +1,7 @@
 demo:
   stage: test
   image: python:3.10
-  timeout: 30m
-  before_script:
-    - pip install --upgrade pip
-    - pip install -r requirements.txt
+  timeout: 60m
   script:
     - chmod +x run.sh
     - ./run.sh smoke

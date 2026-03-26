@@ -450,7 +450,7 @@ class Plot:
         ax.set_xscale('log')
         ax.legend(fontsize=10, loc='upper right')
         ax.grid(True, alpha=0.3, which='both')
-        ax.set_ylim([0.45, 0.85])
+        ax.set_ylim((0.45, 0.85))
 
         for label, overhead, auc, marker, color in points:
             ax.annotate(
@@ -558,7 +558,7 @@ class Plot:
         ax3.axhline(0.5, ls="--", color="gray", label="Random")
         ax3.set_ylabel("AUC")
         ax3.set_title("Attack Performance Comparison")
-        ax3.set_ylim([0.4, 1.0])
+        ax3.set_ylim((0.4, 1.0))
         ax3.legend()
 
         for bar, auc in zip(bars, aucs):
@@ -611,7 +611,7 @@ class Plot:
         ax4.set_xlabel("Visibility (%)")
         ax4.set_ylabel("AUC")
         ax4.set_title("Partial Observability Robustness")
-        ax4.set_ylim([0.4, 1.0])
+        ax4.set_ylim((0.4, 1.0))
         ax4.legend()
         ax4.grid(True, alpha=0.3)
 
@@ -684,7 +684,7 @@ class Plot:
         ax.set_title("Attack Robustness vs Visibility", fontsize=14, fontweight='bold')
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
-        ax.set_ylim([0.45, 0.90])
+        ax.set_ylim((0.45, 0.90))
 
         plt.tight_layout()
         plt.savefig(output_path, dpi=300, bbox_inches='tight')

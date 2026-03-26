@@ -50,7 +50,7 @@ class Profiler:
             return self.total_time / self.call_count if self.call_count > 0 else 0.0
 
         def to_dict(self) -> dict:
-            d = {
+            d: dict = {
                 'total_time': self.total_time,
                 'call_count': self.call_count,
                 'avg_time': self.avg_time,
@@ -255,7 +255,7 @@ class Profiler:
             self.name = name
             self.output_dir = output_dir
             self.keep_samples = keep_samples
-            self._profiler_instance = None
+            self._profiler_instance: Optional['Profiler'] = None
 
         def __enter__(self) -> 'Profiler':
             with Profiler._lock:
@@ -266,13 +266,12 @@ class Profiler:
             self._profiler_instance.record_memory()
             return self._profiler_instance
 
-        def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        def __exit__(self, exc_type, exc_val, exc_tb) -> None:
             if self._profiler_instance:
                 self._profiler_instance.record_memory()
                 filepath = os.path.join(self.output_dir, f'{self.name}_profile.json')
                 self._profiler_instance.save(filepath)
                 self._profiler_instance.print_summary()
-            return False
 
 
 profiler = Profiler.profiler

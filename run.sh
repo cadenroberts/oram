@@ -5,7 +5,7 @@
 # Subcommands:
 #   experiments [--phase N] [--force]   Run training / sweep / analysis phases
 #   pipeline                            Run all phases + analysis (phases.py path)
-#   trace                               OS-level trace capture pipeline
+#   trace [--yes]                        OS-level trace capture pipeline
 #   visibility                          Visibility sweep with partial observability
 #   smoke                               Quick smoke test (2 epochs)
 #   attack                              Membership inference attack pipeline test
@@ -17,7 +17,8 @@
 #   ./run.sh experiments --phase 2    # only phase 2
 #   ./run.sh experiments --force      # re-run even if results exist
 #   ./run.sh pipeline                 # phases.py + plot
-#   ./run.sh trace                    # real syscall trace pipeline
+#   ./run.sh trace                    # real syscall trace pipeline (interactive)
+#   ./run.sh trace --yes              # real syscall trace pipeline (non-interactive)
 #   ./run.sh visibility               # visibility sweep
 #   ./run.sh smoke                    # quick end-to-end verification
 #   ./run.sh attack                   # attack pipeline test
@@ -45,7 +46,7 @@ usage() {
     echo "Subcommands:"
     echo "  experiments [--phase N] [--force]     Training / sweep / analysis phases"
     echo "  pipeline                              All phases via phases.py + plot"
-    echo "  trace                                 OS-level trace capture pipeline"
+    echo "  trace [--yes]                          OS-level trace capture pipeline"
     echo "  visibility                            Visibility sweep (partial observability)"
     echo "  smoke                                 Quick smoke test (2 epochs)"
     echo "  attack                                Membership inference attack test"
@@ -211,6 +212,14 @@ pipeline() {
 # ══════════════════════════════════════════════════════════════
 
 trace() {
+    local SKIP_CONFIRM=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes|-y) SKIP_CONFIRM=1; shift ;;
+            *) echo "Unknown argument: $1"; exit 1 ;;
+        esac
+    done
+
     cd "$PROJECT_ROOT"
     ensure_venv
 
@@ -246,11 +255,13 @@ trace() {
     echo "  Batch size: $BATCH_SIZE"
     echo ""
 
-    read -p "Continue? [y/N] " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Aborted."
-        exit 1
+    if [ "$SKIP_CONFIRM" -eq 0 ]; then
+        read -p "Continue? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Aborted."
+            exit 1
+        fi
     fi
 
     echo ""
@@ -318,12 +329,14 @@ trace() {
             --trace_input "$TRACE_OUTPUT" \
             --trace_mode ebpf_csv \
             --sidecar "$SIDECAR" \
+            --defense plaintext \
             --output "$EVENTS_OUTPUT"
     else
         $PYTHON src/run.py convert \
             --trace_input strace.log \
             --trace_mode strace \
             --sidecar "$SIDECAR" \
+            --defense plaintext \
             --output "$EVENTS_OUTPUT"
     fi
 
@@ -477,6 +490,10 @@ smoke() {
 
     log "Using Python: $PYTHON"
     "$PYTHON" --version
+
+    log "Running unit tests..."
+    cd "${PROJECT_ROOT}/src" && "$PYTHON" test_core.py || fail "Unit tests failed"
+    cd "${PROJECT_ROOT}"
 
     DEMO_DIR="${PROJECT_ROOT}/results/demo"
     BASELINE_DIR="${DEMO_DIR}/baseline"

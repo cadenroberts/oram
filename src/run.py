@@ -47,7 +47,7 @@ from oram import (
     plaintext,
     oram_event,
 )
-from attack import Build, upgraded_attack, simple_attack, PartialObservabilityConfig
+from attack import Build, membership_inference, simple_attack, PartialObservabilityConfig
 from figures import Save, Plot, latex_table, feature_importance_table
 from pipeline import (
     LEAK_PATTERNS,
@@ -182,7 +182,7 @@ class Datasets:
 
             chosen = window[chosen_pos]
 
-            newbuf = deque()
+            newbuf: Deque[Tuple[torch.Tensor, int, int, str]] = deque()
             removed = False
             for item in self.buffer:
                 if not removed and item is chosen:
@@ -613,14 +613,14 @@ def inference_main(args):
     for vis in visibility_levels:
         pt_out = os.path.join(args.output_dir, f"plaintext_v{int(vis*100)}")
         print(f"\nSTEP 3.{int(vis*100)}: Attack plaintext log at visibility={vis}")
-        results_plaintext[vis] = _extract_best(upgraded_attack(
+        results_plaintext[vis] = _extract_best(membership_inference(
             input_path=plaintext_log, output_dir=pt_out,
             visibility=vis, random_state=args.random_state,
         ))
 
         oram_out = os.path.join(args.output_dir, f"oram_v{int(vis*100)}")
         print(f"\nSTEP 4.{int(vis*100)}: Attack ORAM log at visibility={vis}")
-        results_oram[vis] = _extract_best(upgraded_attack(
+        results_oram[vis] = _extract_best(membership_inference(
             input_path=oram_log, output_dir=oram_out,
             visibility=vis, random_state=args.random_state,
         ))
@@ -1596,7 +1596,7 @@ def mi(args) -> None:
     if not (0.0 < args.test_size < 1.0):
         raise ValueError("--test_size must be in (0, 1).")
 
-    upgraded_attack(
+    membership_inference(
         input_path=args.input,
         output_dir=args.output_dir,
         test_size=args.test_size,

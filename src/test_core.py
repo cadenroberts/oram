@@ -2,7 +2,6 @@
 
 import ast
 import csv
-import io
 import json
 import os
 import sys
@@ -378,6 +377,23 @@ def test_mixed_access_report():
     print("[PASS] test_mixed_access_report")
 
 
+def test_pyoram_api_contract():
+    from pyoram.oblivious_storage.tree.path_oram import PathORAM
+    assert callable(getattr(PathORAM, "setup", None)), "PathORAM.setup missing"
+    Profiler.reset()
+    with ORAMStorage(num_samples=4, backend="ram", block_size=DEFAULT_BLOCK_SIZE) as store:
+        img = np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8)
+        store.write(0, img, 3)
+        out_img, out_label = store.read(0)
+        assert out_label == 3
+        np.testing.assert_array_equal(out_img, img)
+        stats = store.get_stats()
+        assert stats["num_samples"] == 4
+        assert stats["backend"] == "ram"
+    Profiler.reset()
+    print("[PASS] test_pyoram_api_contract")
+
+
 def main():
     tests = [
         test_profiler,
@@ -403,6 +419,7 @@ def main():
         test_phases_registry,
         test_python_syntax,
         test_mixed_access_report,
+        test_pyoram_api_contract,
     ]
 
     passed = 0

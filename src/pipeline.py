@@ -24,12 +24,8 @@ from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Tuple
 
 from oram import baseline as train_baseline, oram as train_oram, read_oram_audit_counts
-from attack import Build, upgraded_attack
+from attack import Build, membership_inference
 from figures import Save
-
-
-def ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
 
 
 _RUN_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")
@@ -1003,8 +999,8 @@ def scan_events_for_leakage(events_csv: str) -> Dict[str, object]:
 
 def attack(run_dir: str, input_csv: str, visibility: float) -> Dict[str, object]:
     attack_dir = os.path.join(run_dir, f"attack_v{str(visibility).replace('.', 'p')}")
-    ensure_dir(attack_dir)
-    return upgraded_attack(
+    os.makedirs(attack_dir, exist_ok=True)
+    return membership_inference(
         input_path=input_csv,
         output_dir=attack_dir,
         visibility=visibility,
@@ -1024,7 +1020,7 @@ def best_model_metrics(metrics_json: Dict[str, object]) -> Dict[str, float]:
 
 def single_configuration(cfg: RunConfig, output_root: str, visibilities: List[float]) -> List[Dict[str, object]]:
     run_dir = os.path.join(output_root, cfg.name)
-    ensure_dir(run_dir)
+    os.makedirs(run_dir, exist_ok=True)
 
     with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, indent=2)

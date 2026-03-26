@@ -5,7 +5,7 @@ Build: Feature engineering and model pipelines
 SimpleCNN: Small CNN for simple attacks
 Functions: Feature extraction, model evaluation, attack orchestration
 
-Includes upgraded_attack (full MI pipeline) and simple_attack (frequency-based).
+Includes membership_inference (full MI pipeline) and simple_attack (frequency-based).
 """
 
 import csv
@@ -42,7 +42,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
 from figures import Save, Plot
-from oram import IndexedDataset
+from oram import IndexedDataset, resolve_torch_device
 
 try:
     from xgboost import XGBClassifier
@@ -52,10 +52,6 @@ except Exception:
 
 
 ATTACK_REQUIRED_COLUMNS = {"sample_id", "timestamp", "epoch", "batch_id", "label"}
-
-
-def ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
 
 
 @dataclass
@@ -97,7 +93,7 @@ class Build:
             label_counts[label] = label_counts.get(label, 0) + 1
             sid = str(row["sample_id"])
             sample_event_counts[sid] = sample_event_counts.get(sid, 0) + 1
-        repeated_samples = sum(1 for _, count in sample_event_counts.items() if count > 1)
+        repeated_samples = sum(count > 1 for count in sample_event_counts.values())
         return {
             "num_rows": len(rows),
             "label_counts": label_counts,
@@ -144,8 +140,8 @@ class Build:
 
         noise_count = int(len(observed) * cfg.background_noise_rate)
         all_ids = list(membership_label.keys())
-        max_ts = max([float(r["timestamp"]) for r in observed], default=1.0)
-        max_epoch = max([int(r["epoch"]) for r in observed], default=0)
+        max_ts = max((float(r["timestamp"]) for r in observed), default=1.0)
+        max_epoch = max((int(r["epoch"]) for r in observed), default=0)
 
         for i in range(noise_count):
             sid = rng.choice(all_ids)
@@ -247,8 +243,7 @@ class Build:
 
             rows.append(row)
 
-        feature_df = pd.DataFrame(rows).sort_values("sample_id").reset_index(drop=True)
-        return feature_df
+        return pd.DataFrame(rows).sort_values("sample_id").reset_index(drop=True)
 
     @staticmethod
     def attack_models(random_state: int) -> Dict[str, Pipeline]:
@@ -358,8 +353,7 @@ def simple_attack(
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    device = torch.device("mps" if torch.backends.mps.is_available() else
-                          "cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_torch_device()
 
     print("Using device:", device)
 
@@ -387,7 +381,7 @@ def simple_attack(
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
-    access_count = defaultdict(int)
+    access_count: Dict[int, int] = defaultdict(int)
 
     print("Training...")
 
@@ -471,8 +465,7 @@ def simple_attack(
 
 def events(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
-    missing = ATTACK_REQUIRED_COLUMNS - set(df.columns)
-    if missing:
+    if missing := ATTACK_REQUIRED_COLUMNS - set(df.columns):
         raise ValueError(f"Missing required columns: {sorted(missing)}")
 
     df = df.copy()
@@ -496,8 +489,7 @@ def subsample_visibility(df: pd.DataFrame, visibility: float, random_state: int)
 
     rng = np.random.default_rng(random_state)
     keep_mask = rng.random(len(df)) < visibility
-    out = df.loc[keep_mask].copy().reset_index(drop=True)
-    return out
+    return df.loc[keep_mask].copy().reset_index(drop=True)
 
 
 
@@ -678,7 +670,7 @@ def extract_feature_importance(model: Pipeline, feature_cols: List[str]) -> pd.D
 
 
 
-def upgraded_attack(
+def membership_inference(
     input_path: str,
     output_dir: str,
     test_size: float = 0.3,
@@ -687,7 +679,7 @@ def upgraded_attack(
     max_samples: Optional[int] = None,
 ) -> Dict[str, object]:
     """Non-trivial membership inference from access-pattern logs."""
-    ensure_dir(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
 
     df = events(input_path)
     df = subsample_visibility(df, visibility=visibility, random_state=random_state)
@@ -741,7 +733,7 @@ def upgraded_attack(
             "visibility": visibility,
             "max_samples": max_samples,
         },
-        "num_events": int(len(df)),
+        "num_events": len(df),
         "num_samples": int(feature_df.shape[0]),
         "label_counts": {str(k): int(v) for k, v in label_counts.items()},
         "results": results,
