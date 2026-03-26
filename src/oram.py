@@ -10,6 +10,7 @@ and synthetic plaintext/ORAM access-pattern event generators for experiments.
 """
 
 import csv
+import itertools
 import os
 import time
 import struct
@@ -621,7 +622,7 @@ class _MediatedORAMLoader:
                 labels[pos] = lbl
 
         dataset = PrefetchedDataset(images, labels, self.transform)
-        loader = DataLoader(
+        yield from DataLoader(
             dataset,
             batch_size=self.batch_size,
             shuffle=False,
@@ -629,7 +630,6 @@ class _MediatedORAMLoader:
             pin_memory=True,
             drop_last=self.train,
         )
-        yield from loader
 
 
 # ---------------------------------------------------------------------------
@@ -1053,6 +1053,25 @@ def run_oram_training(
 
     return history
 
+def _write_synthetic_sidecar(
+    sidecar_path: str, epochs: int, num_batches: int, history: Dict
+) -> None:
+    total_time = history.get("total_time", num_batches * epochs * 0.1)
+    batch_duration = total_time / max(num_batches * epochs, 1)
+    training_start = time.time() - total_time
+
+    with SidecarLogger(sidecar_path) as sc:
+        for epoch, batch_idx in itertools.product(range(epochs), range(num_batches)):
+            global_batch = epoch * num_batches + batch_idx
+            synthetic_ts = training_start + global_batch * batch_duration
+            sc.log_at(
+                timestamp=synthetic_ts,
+                batch_id=f"{epoch}_{batch_idx}_train",
+                epoch=epoch,
+                phase="train",
+            )
+
+
 def sidecar_training(args) -> Dict:
     """Run ORAM training with sidecar batch logging."""
     import random as _random
@@ -1075,25 +1094,10 @@ def sidecar_training(args) -> Dict:
         num_workers=args.num_workers,
     )
 
-    sidecar_path = getattr(args, "sidecar_path", None)
-    if sidecar_path:
+    if sidecar_path := getattr(args, "sidecar_path", None):
         num_samples = args.num_samples or 50000
         num_batches = num_samples // args.batch_size
-        total_time = history.get("total_time", num_batches * args.epochs * 0.1)
-        batch_duration = total_time / max(num_batches * args.epochs, 1)
-        training_start = time.time() - total_time
-
-        with SidecarLogger(sidecar_path) as sc:
-            for epoch in range(args.epochs):
-                for batch_idx in range(num_batches):
-                    global_batch = epoch * num_batches + batch_idx
-                    synthetic_ts = training_start + global_batch * batch_duration
-                    sc.log_at(
-                        timestamp=synthetic_ts,
-                        batch_id=f"{epoch}_{batch_idx}_train",
-                        epoch=epoch,
-                        phase="train",
-                    )
+        _write_synthetic_sidecar(sidecar_path, args.epochs, num_batches, history)
 
     return history
 
