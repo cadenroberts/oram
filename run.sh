@@ -94,7 +94,7 @@ phase_done() { [ -f "$1" ] && [ "${FORCE:-0}" -eq 0 ]; }
 # experiments — phased training, sweeps, and analysis
 # ══════════════════════════════════════════════════════════════
 
-cmd_experiments() {
+experiments() {
     local PHASE="" FORCE=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -191,7 +191,7 @@ cmd_experiments() {
 # pipeline — phases.py all + plot
 # ══════════════════════════════════════════════════════════════
 
-cmd_pipeline() {
+pipeline() {
     ensure_venv
     cd "$PROJECT_ROOT"
 
@@ -210,7 +210,7 @@ cmd_pipeline() {
 # trace — OS-level trace capture pipeline
 # ══════════════════════════════════════════════════════════════
 
-cmd_trace() {
+trace() {
     cd "$PROJECT_ROOT"
 
     echo "=== OS-Level Trace Capture Pipeline ==="
@@ -358,7 +358,7 @@ cmd_trace() {
 # visibility — visibility sweep with partial observability
 # ══════════════════════════════════════════════════════════════
 
-cmd_visibility() {
+visibility() {
     cd "$PROJECT_ROOT"
 
     local TRAIN_SIZE=20000
@@ -469,7 +469,7 @@ PYEOF
 # smoke — quick end-to-end verification
 # ══════════════════════════════════════════════════════════════
 
-cmd_smoke() {
+smoke() {
     ensure_venv
     cd "$PROJECT_ROOT"
 
@@ -560,7 +560,7 @@ EOF
 # attack — membership inference attack pipeline test
 # ══════════════════════════════════════════════════════════════
 
-cmd_attack() {
+attack() {
     cd "$PROJECT_ROOT"
 
     echo "=== Testing Upgraded Membership Inference Attack ==="
@@ -642,7 +642,7 @@ cmd_attack() {
 # macos — physical-access audit with fs_usage
 # ══════════════════════════════════════════════════════════════
 
-cmd_macos() {
+macos() {
     local OUT_DIR="${1:-/tmp/oram_macos_audit}"
     local NUM_SAMPLES="${2:-128}"
     local BATCH_SIZE="${3:-32}"
@@ -727,7 +727,7 @@ cmd_macos() {
 # results — paper-ready membership inference evaluation
 # ══════════════════════════════════════════════════════════════
 
-cmd_results() {
+results() {
     cd "$PROJECT_ROOT"
 
     local SKIP_CONFIRM=0
@@ -884,13 +884,13 @@ PYEOF
 # ── Route subcommand ─────────────────────────────────────────
 
 case "$SUBCMD" in
-    experiments)  cmd_experiments "$@" ;;
-    pipeline)     cmd_pipeline "$@" ;;
-    trace)        cmd_trace "$@" ;;
-    visibility)   cmd_visibility "$@" ;;
-    smoke)        cmd_smoke ;;
-    attack)       cmd_attack ;;
-    macos)        cmd_macos "$@" ;;
-    results)      cmd_results "$@" ;;
+    experiments)  experiments "$@" ;;
+    pipeline)     pipeline "$@" ;;
+    trace)        trace "$@" ;;
+    visibility)   visibility "$@" ;;
+    smoke)        smoke ;;
+    attack)       attack ;;
+    macos)        macos "$@" ;;
+    results)      results "$@" ;;
     *)            usage ;;
 esac

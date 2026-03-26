@@ -269,7 +269,7 @@ The plaintext path reads samples directly from disk via \texttt{torchvision.data
 \label{fig:pipeline}
 \end{figure}
 
-\subsection{ORAMStorage and Serialization}
+\subsection{Storage and Serialization}
 
 Each CIFAR-10 sample (32$\times$32$\times$3 image + 1-byte label) is serialized into a fixed-size block using \texttt{struct.pack}: a 4-byte index header, 1-byte label, and 3072-byte flattened image array, totaling 3077~bytes.
 Blocks are padded to the ORAM block size (default 4096~bytes).

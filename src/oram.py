@@ -1,20 +1,22 @@
 """
-ORAM infrastructure: storage, profiling, data loading, and training.
+ORAM infrastructure: storage, data loading, and training.
 
 Storage wraps PyORAM's Path ORAM to store CIFAR-10 samples as encrypted blocks.
-Profiler tracks overhead decomposition across I/O, crypto, shuffle, compute.
 DataLoader provides ORAM-backed and mediated loading modes for CIFAR-10.
-Trainer runs full ORAM-integrated training with ResNet on CIFAR-10.
+Train runs full ORAM-integrated training with ResNet on CIFAR-10.
+
+Also includes sidecar batch logging, ORAM audit parsing, device resolution,
+and synthetic plaintext/ORAM access-pattern event generators for experiments.
 """
 
+import csv
 import os
+import random
 import time
 import struct
 import tempfile
-import threading
 import json
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Callable
 from collections import defaultdict
 
@@ -25,40 +27,32 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import torchvision.models as tv_models
-from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data import Dataset, DataLoader, Sampler, Subset
 from tqdm import tqdm
 from pyoram.oblivious_storage.tree.path_oram import PathORAM
 
+from profiler import Profiler, track, ProfilerContext
+
+
 
 # ---------------------------------------------------------------------------
-# Model factory
+# Storage constants
 # ---------------------------------------------------------------------------
 
-SUPPORTED_MODELS = ("resnet18", "resnet50", "efficientnet_b0")
+CIFAR_IMAGE_SIZE = 32 * 32 * 3  # 3072 bytes
+LABEL_SIZE = 1
+METADATA_SIZE = 4
+MIN_BLOCK_SIZE = METADATA_SIZE + LABEL_SIZE + CIFAR_IMAGE_SIZE  # 3077 bytes
+
+DEFAULT_BLOCK_SIZE = 4096
+
+VALID_BACKENDS = ("file", "ram")
 
 
-def _make_resnet_cifar(base_fn):
-    model = base_fn(weights=None)
-    model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-    model.maxpool = nn.Identity()
-    model.fc = nn.Linear(model.fc.in_features, 10)
-    return model
+# ---------------------------------------------------------------------------
+# Record: sidecar logging, audit parsing, and synthetic event generation
+# ---------------------------------------------------------------------------
 
-
-def create_model(name: str) -> nn.Module:
-    if name not in SUPPORTED_MODELS:
-        raise ValueError(f"Unknown model '{name}'. Supported: {SUPPORTED_MODELS}")
-
-    if name == "resnet18":
-        return _make_resnet_cifar(tv_models.resnet18)
-    elif name == "resnet50":
-        return _make_resnet_cifar(tv_models.resnet50)
-    elif name == "efficientnet_b0":
-        model = tv_models.efficientnet_b0(weights=None)
-        in_features = model.classifier[1].in_features
-        model.classifier[1] = nn.Linear(in_features, 10)
-        return model
-    raise ValueError(f"Unknown model '{name}'")
 
 
 # ---------------------------------------------------------------------------
@@ -865,10 +859,10 @@ def create_standard_dataloader(
 
 
 # ---------------------------------------------------------------------------
-# Trainer
+# Train
 # ---------------------------------------------------------------------------
 
-class Trainer:
+class Train:
     """
     Unified CIFAR-10 trainer supporting both baseline and ORAM modes.
 
@@ -1214,9 +1208,7 @@ class Trainer:
             self.oram_storage.close()
 
 
-# Backward-compatible aliases
-BaselineTrainer = Trainer
-ORAMTrainer = Trainer
+ORAMTrainer = Train
 
 
 def run_baseline_training(
@@ -1233,7 +1225,7 @@ def run_baseline_training(
         Training history
     """
     with ProfilerContext('baseline', output_dir=output_dir):
-        trainer = Trainer(
+        trainer = Train(
             baseline=True,
             batch_size=batch_size,
             device=device,
@@ -1266,7 +1258,7 @@ def run_oram_training(
         Training history
     """
     with ProfilerContext('oram', output_dir=output_dir):
-        trainer = Trainer(
+        trainer = Train(
             baseline=False,
             batch_size=batch_size,
             device=device,
@@ -1286,3 +1278,16 @@ def run_oram_training(
             trainer.cleanup()
 
     return history
+
+# Backward-compatible aliases for run.py imports
+baseline = Train.baseline
+oram = Train.oram
+ORAMDataset = Datasets.ORAM
+IndexedDataset = Datasets.Indexed
+resolve_torch_device = Train.resolve_torch_device
+SUPPORTED_MODELS = Train.Models.SUPPORTED_MODELS
+read_oram_audit_counts = Record.read_oram_audit_counts
+SidecarLogger = Record.Sidecar
+sidecar_training = Record.sidecar_training
+plaintext = Record.plaintext
+oram_event = Record.oram
